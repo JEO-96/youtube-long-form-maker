@@ -1,0 +1,33 @@
+{# 썸네일 생성 프롬프트 (FLUX.2) #}
+{# CTR 최적화 "감정+키워드+궁금증" 3단 텍스트 패턴 #}
+
+Professional YouTube thumbnail, {{ width }}x{{ height }} pixels,
+
+{# 배경 스타일 #}
+{% if background_style == 'gradient_professional' %}
+clean gradient background from {{ primary_color }} to {{ secondary_color }},
+{% elif background_style == 'gradient_dark_tech' %}
+dark tech gradient background, subtle neon glow,
+{% elif background_style == 'gradient_nature' %}
+soft natural gradient background, warm earthy tones,
+{% elif background_style == 'gradient_urban' %}
+urban skyline silhouette background, dramatic sky gradient,
+{% elif background_style == 'gradient_corporate' %}
+elegant corporate gradient, deep navy to charcoal,
+{% else %}
+professional gradient background,
+{% endif %}
+
+{# 메인 비주얼 #}
+{{ visual_description }},
+
+{# CTR 최적화 요소 #}
+dramatic lighting, high contrast,
+{{ accent_color }} accent elements for emphasis,
+bold composition with clear focal point,
+no text in image (text overlay added separately),
+professional stock photo quality,
+4K resolution, clean edges
+
+{# Safe Zone 고려 #}
+{# 하단 {{ safe_zone_bottom }}px는 YouTube 재생시간 표시 영역 - 주요 요소 배치 금지 #}

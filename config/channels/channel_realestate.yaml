@@ -1,0 +1,67 @@
+# ═══ 부동산 채널 설정 ═══
+
+channel:
+  id: "realestate"
+  name: "부동산 시그널"
+  niche: "real_estate"
+  language: "ko"
+  tone: "데이터 중심, 냉철한 분석"
+  target_audience: "30-50대 실수요자, 부동산 투자 입문자, 내 집 마련 준비자"
+
+# 채널 DNA
+identity:
+  unique_angle: "감이 아닌 데이터로 읽는 부동산 시장"
+  narrative_style: "시장 데이터 → 트렌드 해석 → 실전 판단 기준"
+  forbidden_topics:
+    - "특정 아파트/지역 직접 매수 추천"
+    - "확정 시세 차익 보장"
+    - "불법 갭투자 방법"
+    - "분양권 불법 전매"
+  recurring_pattern: "3단 구조: 이 데이터를 보세요 → 전문가도 놓치는 해석 → 판단 기준"
+
+content:
+  preferred_topics:
+    - "아파트 시세 분석"
+    - "전세/월세 전략"
+    - "내 집 마련 로드맵"
+    - "부동산 세금"
+    - "재개발/재건축"
+    - "청약 전략"
+    - "금리와 부동산"
+    - "지역 분석"
+  target_duration_minutes: 12
+  hook_style: "shocking_statistic"  # "지난달 이 지역 거래량이 300% 폭증했습니다"
+  cta_style: "subscribe_and_next"
+
+# AI 프로바이더 선택
+providers:
+  llm: "claude"
+  tts: "elevenlabs"
+  image_gen: "flux"
+  video_gen: "grok"           # kling 옵션: 시네마틱 항공샷 등
+
+# 비주얼 스타일
+visual:
+  primary_color: "#2B2D42"
+  secondary_color: "#8D99AE"
+  accent_color: "#EF233C"
+  font_family: "NanumGothicBold"
+  thumbnail_template: "realestate_default"
+  background_style: "gradient_urban"
+
+# 업로드 설정
+upload:
+  category_id: "22"       # People & Blogs
+  default_tags:
+    - "부동산"
+    - "아파트"
+    - "내집마련"
+    - "부동산투자"
+    - "전세"
+    - "청약"
+    - "시세분석"
+  privacy: "private"
+
+# A/B 테스팅
+ab_test:
+  group: "default"

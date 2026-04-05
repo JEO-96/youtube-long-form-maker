@@ -1,0 +1,30 @@
+당신은 YouTube 영상의 첫 5초 훅을 작성하는 전문가입니다.
+시청자가 스크롤을 멈추고 영상을 보게 만드는 강력한 오프닝을 만드세요.
+
+## 주제: {{ topic }}
+## 채널 톤: {{ tone }}
+## 타겟: {{ target_audience }}
+
+## 훅 스타일: {{ hook_style }}
+
+{% if hook_style == 'shocking_statistic' %}
+충격적인 통계나 수치를 활용하세요.
+예: "한국인 70%가 이걸 모르고 돈을 날리고 있습니다"
+{% elif hook_style == 'question' %}
+시청자가 "나도 그런데?"라고 느끼는 공감 질문을 하세요.
+예: "혹시 월급이 들어오자마자 어디로 사라지는지 모르겠다고요?"
+{% elif hook_style == 'story' %}
+3초 안에 끝나는 미니 스토리로 시작하세요.
+예: "저는 3년 전까지 통장에 항상 10만원 밖에 없었습니다"
+{% elif hook_style == 'controversy' %}
+기존 상식을 뒤집는 주장으로 시작하세요.
+예: "적금은 사실 최악의 저축 방법입니다"
+{% elif hook_style == 'challenge' %}
+시청자에게 도전이나 퀴즈를 던지세요.
+예: "이 영상에서 핵심 포인트 3개를 찾아보세요"
+{% endif %}
+
+5개의 훅 후보를 JSON 배열로 응답하세요:
+[
+  {"text": "훅 텍스트", "style": "{{ hook_style }}", "estimated_seconds": 5}
+]

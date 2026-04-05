@@ -1,0 +1,88 @@
+# ═══ AI 프로바이더 설정 + 가격 ═══
+
+llm:
+  claude:
+    model: "claude-opus-4-6"
+    max_tokens: 8192
+    temperature: 0.7
+    pricing:
+      input_per_1k_tokens: 0.015
+      output_per_1k_tokens: 0.075
+
+  gpt:
+    model: "gpt-5.4"
+    max_tokens: 8192
+    temperature: 0.7
+    role: "structure_designer"  # 구조 설계/마케팅 최적화 전용
+    pricing:
+      input_per_1k_tokens: 0.005
+      output_per_1k_tokens: 0.015
+
+tts:
+  elevenlabs:
+    model: "eleven_multilingual_v3"
+    default_voice_id: "${ELEVENLABS_VOICE_ID}"
+    stability: 0.5
+    similarity_boost: 0.75
+    style: 0.5
+    pricing:
+      per_character: 0.00003
+
+  typecast:
+    model: "ssfm-v30"
+    default_voice_id: "${TYPECAST_VOICE_ID}"
+    default_emotion: "neutral"
+    speed: 1.0
+    pitch: 0
+    pricing:
+      per_character: 0.00005
+
+stt:
+  whisper:
+    model: "large-v3"
+    language: "ko"
+    device: "cpu"  # "cuda" for GPU
+    pricing:
+      per_minute: 0.0  # 로컬, 무료
+
+image_gen:
+  flux:
+    model: "flux-2-pro"
+    width: 1920
+    height: 1080
+    steps: 30
+    guidance: 7.5
+    pricing:
+      per_image: 0.05
+
+video_gen:
+  grok:
+    model: "grok-imagine-video"
+    duration_seconds: 10
+    resolution: "720p"
+    include_audio: true
+    pricing:
+      per_video: 0.15
+
+  kling:
+    model: "kling-v3"
+    duration_seconds: 10
+    resolution: "1080p"
+    mode: "standard"  # standard | professional
+    pricing:
+      per_second: 0.03
+
+stock_media:
+  pexels:
+    min_width: 1920
+    min_duration: 5
+    orientation: "landscape"
+    per_page: 10
+    pricing:
+      per_request: 0.0  # 무료
+
+youtube:
+  api_version: "v3"
+  scopes:
+    - "https://www.googleapis.com/auth/youtube.upload"
+    - "https://www.googleapis.com/auth/youtube.readonly"

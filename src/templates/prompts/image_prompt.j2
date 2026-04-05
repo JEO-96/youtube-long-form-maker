@@ -1,0 +1,31 @@
+{# FLUX.2 이미지 생성 프롬프트 템플릿 #}
+{# 씬별 이미지 프롬프트를 고품질로 확장 #}
+
+{% if media_type == 'infographic' %}
+Professional infographic illustration, clean modern design,
+{{ visual_description }},
+color scheme: {{ primary_color }} and {{ accent_color }},
+minimalist Korean-style layout, data visualization,
+white background, high contrast text,
+4K resolution, sharp details
+{% elif media_type == 'portrait' %}
+Professional portrait photography style,
+{{ visual_description }},
+studio lighting, shallow depth of field,
+warm color grading, {{ background_style }},
+high quality, photorealistic
+{% elif media_type == 'concept' %}
+Conceptual illustration,
+{{ visual_description }},
+{{ primary_color }} color palette,
+modern flat design with depth,
+professional stock photo quality,
+clean composition, centered subject
+{% else %}
+Professional YouTube thumbnail style image,
+{{ visual_description }},
+vibrant colors, high contrast,
+{{ primary_color }} and {{ accent_color }} color scheme,
+dramatic lighting, engaging composition,
+4K quality, photorealistic
+{% endif %}

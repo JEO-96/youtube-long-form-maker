@@ -1,0 +1,50 @@
+# ═══ 채널 설정 템플릿 ═══
+# 새 채널 추가 시 이 파일을 복사하여 channel_{id}.yaml로 저장
+
+channel:
+  id: ""                  # 고유 채널 ID (영문, 밑줄)
+  name: ""                # 채널 표시명
+  niche: ""               # 니치 (personal_finance, business, tech, health, realestate)
+  language: "ko"
+  tone: ""                # 채널 톤 (예: "신뢰감 있고 이해하기 쉬운")
+  target_audience: ""     # 타겟 오디언스
+
+# 채널 DNA
+identity:
+  unique_angle: ""        # 차별화 각도
+  narrative_style: ""     # 서사 스타일 (예: "문제 제기 → 반전 → 해결책")
+  forbidden_topics: []    # 금지 주제
+  recurring_pattern: ""   # 반복 패턴
+
+content:
+  preferred_topics: []
+  target_duration_minutes: 10
+  hook_style: "question"  # question, shocking_statistic, story, controversy, challenge
+  cta_style: "subscribe_and_next"
+
+# AI 프로바이더 선택 (채널별 커스터마이징)
+providers:
+  llm: "claude"           # claude, gpt
+  tts: "elevenlabs"       # elevenlabs, typecast
+  image_gen: "flux"       # flux
+  video_gen: "grok"       # grok, kling
+
+# 비주얼 스타일
+visual:
+  primary_color: "#333333"
+  secondary_color: "#666666"
+  accent_color: "#FF0000"
+  font_family: "NanumGothicBold"
+  thumbnail_template: "default"
+  background_style: "gradient_professional"
+
+# 업로드 설정
+upload:
+  category_id: "22"       # YouTube 카테고리 ID
+  default_tags: []
+  privacy: "private"      # private, unlisted, public
+  # playlist_id: ""
+
+# A/B 테스팅
+ab_test:
+  group: "default"

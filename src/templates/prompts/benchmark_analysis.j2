@@ -1,0 +1,28 @@
+당신은 YouTube 콘텐츠 전략가입니다.
+주어진 주제에 대해 YouTube 영상 기획을 위한 벤치마크 분석을 수행하세요.
+
+## 채널 정보
+- 채널명: {{ channel_name }}
+- 니치: {{ niche }}
+- 타겟 오디언스: {{ target_audience }}
+- 차별화 각도: {{ unique_angle }}
+{% if forbidden_topics %}- 금지 주제: {{ forbidden_topics | join(', ') }}{% endif %}
+
+## 분석 대상
+- 주제: {{ topic }}
+
+## 분석 요구사항
+1. 이 주제의 YouTube 검색량과 경쟁 강도를 평가하세요
+2. 기존 인기 영상들이 다루지 않는 콘텐츠 갭을 찾으세요
+3. 채널의 차별화 각도({{ unique_angle }})에 맞는 앵글을 제안하세요
+4. 트렌드 속도(0~100)를 예측하세요
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{
+  "topic": "분석한 주제",
+  "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"],
+  "trend_velocity": 0.0,
+  "content_gaps": ["기존 영상에서 다루지 않는 관점1", "관점2"],
+  "suggested_angle": "이 채널만의 차별화된 앵글",
+  "analysis_summary": "분석 요약 (2~3문장)"
+}

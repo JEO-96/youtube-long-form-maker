@@ -1,0 +1,72 @@
+# ═══ YouTube Long Form Maker - 글로벌 설정 ═══
+
+project:
+  name: "youtube-long-form-maker"
+  data_dir: "data"
+  db_path: "data/db/production.db"
+  log_level: "INFO"
+
+video:
+  default_resolution: [1920, 1080]
+  default_fps: 30
+  target_duration_minutes: 10
+  max_file_size_mb: 2000
+  encoding:
+    codec: "libx264"
+    audio_codec: "aac"
+    preset: "medium"
+    crf: 23
+
+media_generation:
+  concurrency_limit: 3  # asyncio.Semaphore
+  stock_mix_ratio: 0.2  # 20% 스톡 영상 혼합
+
+retention:
+  hook_duration_seconds: 5
+  pattern_interrupt:
+    min_interval: 4.5
+    max_interval: 9.0
+  timing_offset:
+    min: 0.2
+    max: 0.5
+  audio_ducking:
+    bgm_volume_during_speech: 0.15
+    fade_duration_ms: 500
+
+thumbnail:
+  width: 1280
+  height: 720
+  safe_zone:
+    bottom_margin: 80  # 유튜브 재생시간 표시바 가림 방지
+    right_margin: 40
+  text_styles:
+    - name: "emotion"
+      font_size: 72
+      color: "#FF0000"
+      position: "top"
+    - name: "keyword"
+      font_size: 96
+      color: "#FFFFFF"
+      position: "center"
+    - name: "curiosity"
+      font_size: 64
+      color: "#FFFF00"
+      position: "bottom"
+
+youtube:
+  daily_quota_limit: 10000
+  upload_quota_cost: 1600
+  default_privacy: "private"  # 안전: 비공개로 시작
+  default_category_id: "22"  # People & Blogs
+
+rate_limits:
+  anthropic:
+    requests_per_minute: 50
+  elevenlabs:
+    characters_per_month: 500000
+  flux:
+    requests_per_minute: 10
+  grok:
+    requests_per_minute: 20
+  pexels:
+    requests_per_month: 20000

@@ -1,0 +1,67 @@
+# ═══ 비즈니스/창업 채널 설정 ═══
+
+channel:
+  id: "business"
+  name: "비즈니스 인사이트"
+  niche: "business_startup"
+  language: "ko"
+  tone: "전문적이고 인사이트 있는, 사례 중심"
+  target_audience: "25-45대 예비 창업자, 1인 사업자, 직장인 부업 관심층"
+
+# 채널 DNA
+identity:
+  unique_angle: "성공/실패 사례 분석에서 배우는 실전 비즈니스 전략"
+  narrative_style: "사례 제시 → 핵심 분석 → 내 사업에 적용법"
+  forbidden_topics:
+    - "확정 수익 보장"
+    - "불법 사업 모델"
+    - "다단계/피라미드 옹호"
+    - "특정 프랜차이즈 직접 추천"
+  recurring_pattern: "3단 구조: 이 사업은 왜 성공했나 → 핵심 원리 → 당신도 적용하는 법"
+
+content:
+  preferred_topics:
+    - "1인 창업"
+    - "부업/사이드 프로젝트"
+    - "비즈니스 모델 분석"
+    - "마케팅 전략"
+    - "브랜딩"
+    - "수익 다각화"
+    - "성공 사례 분석"
+    - "실패 사례에서 배우기"
+  target_duration_minutes: 12
+  hook_style: "story"             # 사례 스토리로 시작
+  cta_style: "subscribe_and_next"
+
+# AI 프로바이더 선택
+providers:
+  llm: "claude"
+  tts: "elevenlabs"
+  image_gen: "flux"
+  video_gen: "grok"
+
+# 비주얼 스타일
+visual:
+  primary_color: "#1A1A2E"
+  secondary_color: "#16213E"
+  accent_color: "#E94560"
+  font_family: "NanumGothicBold"
+  thumbnail_template: "business_default"
+  background_style: "gradient_corporate"
+
+# 업로드 설정
+upload:
+  category_id: "22"       # People & Blogs
+  default_tags:
+    - "비즈니스"
+    - "창업"
+    - "부업"
+    - "사업"
+    - "마케팅"
+    - "1인기업"
+    - "수익화"
+  privacy: "private"
+
+# A/B 테스팅
+ab_test:
+  group: "default"

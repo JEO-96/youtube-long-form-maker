@@ -1,0 +1,39 @@
+{# Grok Imagine / Kling 영상 생성 프롬프트 템플릿 #}
+{# 씬별 영상 프롬프트를 고품질로 확장 #}
+
+{% if scene_type == 'hook' %}
+Cinematic opening shot, dramatic lighting,
+slow motion camera push-in,
+{{ visual_description }},
+moody atmosphere, film grain,
+professional color grading,
+4K cinematic quality
+{% elif scene_type == 'data' %}
+Smooth camera pan across digital dashboard,
+{{ visual_description }},
+holographic data visualization,
+floating numbers and charts,
+dark background with {{ accent_color }} highlights,
+tech corporate style, clean motion graphics
+{% elif scene_type == 'transition' %}
+Elegant camera transition,
+{{ visual_description }},
+smooth dolly movement,
+professional B-roll footage style,
+soft focus background, subtle motion,
+clean and modern aesthetic
+{% elif scene_type == 'cta' %}
+Subscribe button animation,
+channel branding elements,
+{{ visual_description }},
+call to action overlay,
+bright and inviting atmosphere,
+clean modern design
+{% else %}
+Cinematic B-roll footage,
+{{ visual_description }},
+smooth camera movement, professional lighting,
+{{ primary_color }} color palette,
+high quality video production,
+engaging visual storytelling
+{% endif %}

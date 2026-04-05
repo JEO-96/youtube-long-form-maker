@@ -1,0 +1,64 @@
+# ═══ 재테크/투자 채널 설정 (MVP 1차 메인) ═══
+
+channel:
+  id: "finance"
+  name: "스마트 재테크"
+  niche: "personal_finance"
+  language: "ko"
+  tone: "신뢰감 있고 이해하기 쉬운"
+  target_audience: "20-30대 사회초년생, 재테크 입문자"
+
+# 채널 DNA (GPT 3차 핵심)
+identity:
+  unique_angle: "전문가들이 알려주지 않는 실전 재테크"
+  narrative_style: "문제 제기 → 반전 → 해결책"
+  forbidden_topics:
+    - "특정 주식 추천"
+    - "확정 수익률 보장"
+    - "불법 절세"
+  recurring_pattern: "3단 구조: 위험 경고 → 현실 분석 → 실전 팁"
+
+content:
+  preferred_topics:
+    - "통장 관리"
+    - "적금/예금 전략"
+    - "신용 관리"
+    - "세금 절약"
+    - "투자 입문"
+    - "월급 관리"
+  target_duration_minutes: 10
+  hook_style: "shocking_statistic"  # 충격 통계로 시작
+  cta_style: "subscribe_and_next"
+
+# AI 프로바이더 선택
+providers:
+  llm: "claude"
+  tts: "elevenlabs"
+  image_gen: "flux"
+  video_gen: "grok"
+
+# 비주얼 스타일
+visual:
+  primary_color: "#1B4332"
+  secondary_color: "#D4A574"
+  accent_color: "#E63946"
+  font_family: "NanumGothicBold"
+  thumbnail_template: "finance_default"
+  background_style: "gradient_professional"
+
+# 업로드 설정
+upload:
+  category_id: "22"
+  default_tags:
+    - "재테크"
+    - "투자"
+    - "돈관리"
+    - "사회초년생"
+    - "월급관리"
+  privacy: "private"  # MVP: 비공개로 시작
+  # playlist_id: ""
+
+# A/B 테스팅 (Gemini 3차)
+ab_test:
+  group: "default"
+  # 실험 변수: hook_style, thumbnail_style, video_length

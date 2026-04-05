@@ -1,0 +1,79 @@
+# ═══ 건강/웰빙 채널 설정 ═══
+
+channel:
+  id: "health"
+  name: "오늘의 건강습관"
+  niche: "health_wellness"
+  language: "ko"
+  tone: "차분하고 따뜻한, 과학적 근거 기반"
+  target_audience: "30-50대, 건강 관심층, 만성질환 예방 관심자"
+
+# 채널 DNA
+identity:
+  unique_angle: "논문 기반 건강 정보를 일상 실천법으로 변환"
+  narrative_style: "오해 제기 → 과학적 근거 → 실천 가이드"
+  forbidden_topics:
+    - "완치"
+    - "즉효"
+    - "부작용 없음"
+    - "의사도 모르는"
+    - "특정 약품/보충제 직접 추천"
+    - "자가 진단 유도"
+  recurring_pattern: "3단 구조: 흔한 오해 → 연구 결과 → 오늘부터 실천법"
+
+# 건강 채널 안전 정책 (GPT 4차 필수)
+safety_policy:
+  source_policy: required          # 출처 필수
+  claim_style: cautious            # 조심스러운 주장
+  medical_disclaimer: true         # 의료 면책 조항
+  forbidden_claims:
+    - "완치"
+    - "즉효"
+    - "부작용 없음"
+    - "의사도 모르는"
+
+content:
+  preferred_topics:
+    - "수면 개선"
+    - "혈당 관리"
+    - "면역력 강화"
+    - "스트레스 해소"
+    - "식단 관리"
+    - "운동 루틴"
+    - "장 건강"
+    - "눈 건강"
+  target_duration_minutes: 10
+  hook_style: "question"           # "혹시 이렇게 하고 계신가요?"
+  cta_style: "subscribe_and_next"
+
+# AI 프로바이더 선택
+providers:
+  llm: "claude"
+  tts: "elevenlabs"       # 차분한 목소리, TypeCast 한국어도 적합
+  image_gen: "flux"
+  video_gen: "grok"
+
+# 비주얼 스타일
+visual:
+  primary_color: "#2D6A4F"
+  secondary_color: "#95D5B2"
+  accent_color: "#D62828"
+  font_family: "NanumGothicBold"
+  thumbnail_template: "health_default"
+  background_style: "gradient_nature"
+
+# 업로드 설정
+upload:
+  category_id: "26"       # Howto & Style
+  default_tags:
+    - "건강"
+    - "건강정보"
+    - "웰빙"
+    - "건강습관"
+    - "면역력"
+    - "생활건강"
+  privacy: "private"
+
+# A/B 테스팅
+ab_test:
+  group: "default"
