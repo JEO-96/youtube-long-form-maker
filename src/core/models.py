@@ -46,6 +46,19 @@ class TransitionType(str, Enum):
     ZOOM = "zoom"
 
 
+class VisualIntent(str, Enum):
+    """씬 시각 의도 — 각 장면이 어떤 형태로 보여야 하는지 강제 지정."""
+    REAL_BROLL = "real_broll"              # 실사 B-roll (도시, 생활, 현장)
+    MAP = "map"                            # 지도/지역 항공샷
+    CHART = "chart"                        # 차트/그래프/숫자 카드
+    INFOGRAPHIC = "infographic"            # 인포그래픽/데이터 시각화
+    CHECKLIST = "checklist"                # 체크리스트 카드
+    COMPARISON_CARD = "comparison_card"    # 비교 카드 (A vs B, before/after)
+    EMPHASIS_CAPTION = "emphasis_caption"  # 핵심 문장/숫자 풀스크린 캡션
+    TALKING_HEAD_STYLE = "talking_head_style"  # 토킹헤드 스타일 (카메라 시선)
+    CLOSING_CTA = "closing_cta"            # 엔딩 구독/CTA 카드
+
+
 # ═══ S1: Benchmark Result ═══
 
 class CompetitorVideo(BaseModel):
@@ -104,12 +117,23 @@ class TimedSegment(BaseModel):
     confidence: float = 1.0
 
 
+class SectionTiming(BaseModel):
+    """스크립트 섹션별 실제 오디오 타이밍 (STT 기반)."""
+    section_index: int       # 0=hook+intro, 1..N=sections, N+1=cta+outro
+    section_label: str = ""  # "hook", "section_1", ..., "cta"
+    start: float = 0.0       # 초 (첫 세그먼트의 start)
+    end: float = 0.0         # 초 (마지막 세그먼트의 end)
+    duration: float = 0.0    # end - start
+    segment_indices: list[int] = []  # 이 섹션에 속하는 voice segment 인덱스들
+
+
 class VoiceResult(BaseModel):
     """S3 음성+자막 결과."""
     audio_path: str = ""
     srt_path: str = ""
     total_duration_seconds: float = 0.0
     segments: list[TimedSegment] = []
+    section_timings: list[SectionTiming] = []  # STT 기반 섹션별 실제 타이밍
     tts_provider: str = ""
     voice_id: str = ""
 
@@ -124,10 +148,11 @@ class Scene(BaseModel):
     duration: float = 0.0
     narration_text: str = ""
     visual_description: str = ""
+    visual_intent: VisualIntent = VisualIntent.REAL_BROLL  # 장면 시각 의도
     media_type: MediaType = MediaType.AI_IMAGE
     image_prompt: str = ""
     video_prompt: str = ""
-    stock_search_query: str = ""  # 스톡 영상 검색 키워드
+    stock_search_query: str = ""  # 스톡 영상 검색 키워드 (영문, 의미 기반)
     transition: TransitionType = TransitionType.CUT
     is_hook: bool = False  # 첫 5초 Hook 씬
     visual_keywords: list[str] = []  # 화면에 팝업할 키워드
@@ -155,11 +180,30 @@ class MediaAsset(BaseModel):
     provider: str = ""
 
 
+class SceneFailureRecord(BaseModel):
+    """씬 미디어 생성 실패 기록 (구조화된 디버그 정보)."""
+    scene_number: int
+    provider: str = ""
+    exception_type: str = ""         # "ConnectError", "ProviderError", "TimeoutError" 등
+    http_status: int | None = None   # HTTP 상태 코드 (있을 경우)
+    error_message: str = ""          # 핵심 에러 메시지
+    detail: str = ""                 # response body 또는 connect/timeout 상세
+    fallback_used: bool = False      # fallback 이미지로 대체했는지
+    fallback_path: str = ""          # fallback 파일 경로
+    # ═══ failover 추적 필드 ═══
+    provider_attempts: list[str] = []    # 시도한 provider 순서 ["flux", "flux_retry", "openai", ...]
+    final_provider: str = ""             # 최종 성공 provider 또는 "fallback_pillow"
+    failure_stage: str = ""              # "first_try" | "retry" | "failover" | "fallback"
+    network_related: bool = False        # 네트워크 연결 실패 여부
+    human_summary: str = ""              # 사람이 바로 읽을 수 있는 요약
+
+
 class MediaResult(BaseModel):
     """S5 미디어 생성 결과."""
     assets: list[MediaAsset] = []
     total_cost: float = 0.0
-    failed_scenes: list[int] = []  # 실패한 씬 번호 (재시도용)
+    failed_scenes: list[int] = []           # 실패한 씬 번호 (재시도용)
+    failure_records: list[SceneFailureRecord] = []  # 구조화된 실패 기록
 
 
 # ═══ S6: Editing Result ═══
@@ -173,6 +217,8 @@ class EditingResult(BaseModel):
     file_size_mb: float = 0.0
     applied_effects: list[str] = []
     pattern_interrupts_count: int = 0
+    subtitle_count: int = 0
+    quality_gate_passed: bool = False
 
 
 # ═══ S7: Thumbnail Result ═══

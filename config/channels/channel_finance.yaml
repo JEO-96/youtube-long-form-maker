@@ -34,7 +34,8 @@ content:
 providers:
   llm: "claude"
   tts: "elevenlabs"
-  image_gen: "flux"
+  voice_id: "${ELEVENLABS_VOICE_ID_FINANCE}"  # 추천: David Castlemore
+  image_gen: "openai"
   video_gen: "grok"
 
 # 비주얼 스타일
@@ -57,6 +58,14 @@ upload:
     - "월급관리"
   privacy: "private"  # MVP: 비공개로 시작
   # playlist_id: ""
+
+# 브랜딩 노출 정책
+branding:
+  show_in_video: false
+  show_in_fallback: false
+  show_in_thumbnail: true
+  show_in_ending: true
+  position: "bottom_bar"
 
 # A/B 테스팅 (Gemini 3차)
 ab_test:

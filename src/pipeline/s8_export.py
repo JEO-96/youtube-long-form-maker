@@ -41,6 +41,21 @@ class S8Export(BaseStage):
             final_path.write_bytes(b"\x00" * 1024)
             file_size_mb = 0.001
 
+        # Quality gate
+        if not self.dry_run:
+            min_duration = 120.0  # minimum 2 minutes for any long-form content
+            if editing.duration_seconds < min_duration:
+                from ..core.exceptions import StageError
+                raise StageError("export", self.production_id,
+                    cause=ValueError(
+                        f"QUALITY GATE FAILED: video {editing.duration_seconds:.1f}s < {min_duration:.0f}s minimum"))
+
+            if file_size_mb < 1.0:
+                from ..core.exceptions import StageError
+                raise StageError("export", self.production_id,
+                    cause=ValueError(
+                        f"QUALITY GATE FAILED: file {file_size_mb:.2f}MB is suspiciously small"))
+
         # YouTube 업로드 시도
         upload_result = await self._try_upload(final_path, thumb)
 

@@ -37,7 +37,8 @@ content:
 providers:
   llm: "claude"
   tts: "elevenlabs"
-  image_gen: "flux"
+  voice_id: "${ELEVENLABS_VOICE_ID_REALESTATE}"  # 추천: Bryan
+  image_gen: "openai"
   video_gen: "grok"           # kling 옵션: 시네마틱 항공샷 등
 
 # 비주얼 스타일
@@ -61,6 +62,14 @@ upload:
     - "청약"
     - "시세분석"
   privacy: "private"
+
+# 브랜딩 노출 정책
+branding:
+  show_in_video: false          # 본문 영상에 채널명 자동 삽입하지 않음 (미확정 브랜드)
+  show_in_fallback: false       # fallback 비주얼에도 채널명 미노출
+  show_in_thumbnail: true       # 썸네일에는 노출
+  show_in_ending: true          # 엔딩 CTA에는 노출
+  position: "bottom_bar"        # 표시 위치: bottom_bar, watermark, none
 
 # A/B 테스팅
 ab_test:

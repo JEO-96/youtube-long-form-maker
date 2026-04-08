@@ -147,6 +147,7 @@ class StateManager:
                 "UPDATE productions SET current_stage=?, status=?, updated_at=? WHERE production_id=?",
                 (stage.value, status.value, now, production_id),
             )
+        self._update_state_json(production_id)
 
     def mark_failed(self, production_id: str, error: str) -> None:
         """프로덕션 실패 기록."""
@@ -156,6 +157,7 @@ class StateManager:
                 "UPDATE productions SET status=?, error_message=?, updated_at=? WHERE production_id=?",
                 (ProductionStatus.FAILED.value, error, now, production_id),
             )
+        self._update_state_json(production_id)
 
     def mark_completed(self, production_id: str) -> None:
         """프로덕션 완료."""
@@ -165,6 +167,7 @@ class StateManager:
                 "UPDATE productions SET status=?, updated_at=? WHERE production_id=?",
                 (ProductionStatus.COMPLETED.value, now, production_id),
             )
+        self._update_state_json(production_id)
 
     def get_production(self, production_id: str) -> dict | None:
         """프로덕션 조회."""
@@ -253,6 +256,31 @@ class StateManager:
         with self._connect() as conn:
             row = conn.execute(query, params).fetchone()
         return float(row["total"]) if row else 0.0
+
+    def _update_state_json(self, production_id: str) -> None:
+        """SQLite 상태를 state.json에 동기화 (파이프라인 실패 방지를 위해 예외 무시)."""
+        try:
+            from .config import DATA_DIR
+            prod = self.get_production(production_id)
+            if prod is None:
+                return
+            state_path = DATA_DIR / "productions" / production_id / "state.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_data = {
+                "production_id": prod["production_id"],
+                "channel_id": prod["channel_id"],
+                "topic": prod["topic"],
+                "current_stage": prod["current_stage"],
+                "status": prod["status"],
+                "updated_at": prod["updated_at"],
+            }
+            state_path.write_text(
+                json.dumps(state_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            # state.json 동기화 실패가 파이프라인을 중단시키지 않도록 함
+            pass
 
     def _write_state_json(self, production: VideoProduction) -> None:
         """프로덕션 디렉토리에 state.json 기록 (디버깅용)."""

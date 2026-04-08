@@ -50,7 +50,8 @@ content:
 providers:
   llm: "claude"
   tts: "elevenlabs"       # 차분한 목소리, TypeCast 한국어도 적합
-  image_gen: "flux"
+  voice_id: "${ELEVENLABS_VOICE_ID_HEALTH}"  # 추천: Juniper
+  image_gen: "openai"
   video_gen: "grok"
 
 # 비주얼 스타일
@@ -73,6 +74,14 @@ upload:
     - "면역력"
     - "생활건강"
   privacy: "private"
+
+# 브랜딩 노출 정책
+branding:
+  show_in_video: false
+  show_in_fallback: false
+  show_in_thumbnail: true
+  show_in_ending: true
+  position: "bottom_bar"
 
 # A/B 테스팅
 ab_test:

@@ -16,6 +16,7 @@ from ..core.exceptions import (
     QuotaExhaustedError,
     RateLimitError,
 )
+from ..core.korean_number import preprocess_korean_numbers
 from ..core.retry import retry
 from .base import TTSProvider
 
@@ -40,7 +41,8 @@ class ElevenLabsTTS(TTSProvider):
         self.style = el_cfg.get("style", 0.5)
         self.pricing = el_cfg.get("pricing", {})
 
-    @retry(max_attempts=3, base_delay=2.0)
+    MAX_CHARS = 4800  # ElevenLabs 5000자 제한, 안전 마진
+
     async def synthesize(
         self,
         text: str,
@@ -48,7 +50,7 @@ class ElevenLabsTTS(TTSProvider):
         output_path: Path | None = None,
         **kwargs: Any,
     ) -> Path:
-        """텍스트→음성 합성."""
+        """텍스트→음성 합성. 5000자 초과 시 자동 청킹 + 결합."""
         voice_id = voice_id or self.default_voice_id
         if not voice_id:
             raise ProviderError("elevenlabs", "No voice_id provided", retryable=False)
@@ -56,6 +58,37 @@ class ElevenLabsTTS(TTSProvider):
         output_path = output_path or Path("output.mp3")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # ═══ 한국어 숫자 발음 전처리 (3가지→세 가지 등) ═══
+        text = preprocess_korean_numbers(text)
+
+        if len(text) <= self.MAX_CHARS:
+            return await self._synthesize_single(text, voice_id, output_path, **kwargs)
+
+        # ═══ 청킹: 문장 경계에서 분할 → raw MP3 바이트 연결 ═══
+        chunks = self._split_text_for_tts(text, self.MAX_CHARS)
+        logger.info(f"Text too long ({len(text)} chars), splitting into {len(chunks)} chunks")
+
+        mp3_parts: list[bytes] = []
+        for i, chunk in enumerate(chunks):
+            chunk_path = output_path.parent / f"_tts_chunk_{i:03d}.mp3"
+            await self._synthesize_single(chunk, voice_id, chunk_path, **kwargs)
+            mp3_parts.append(chunk_path.read_bytes())
+            chunk_path.unlink(missing_ok=True)
+
+        # MP3는 스트리밍 포맷이므로 raw bytes 연결이 가능
+        output_path.write_bytes(b"".join(mp3_parts))
+        logger.info(f"ElevenLabs TTS: {len(text)} chars ({len(chunks)} chunks) → {output_path}")
+        return output_path
+
+    @retry(max_attempts=3, base_delay=2.0)
+    async def _synthesize_single(
+        self,
+        text: str,
+        voice_id: str,
+        output_path: Path,
+        **kwargs: Any,
+    ) -> Path:
+        """단일 청크 합성."""
         url = f"{ELEVENLABS_API_BASE}/text-to-speech/{voice_id}"
         headers = {
             "xi-api-key": self.api_key,
@@ -83,8 +116,25 @@ class ElevenLabsTTS(TTSProvider):
         self._handle_error(resp)
 
         output_path.write_bytes(resp.content)
-        logger.info(f"ElevenLabs TTS: {len(text)} chars → {output_path} ({len(resp.content)} bytes)")
+        logger.info(f"ElevenLabs TTS chunk: {len(text)} chars → {output_path} ({len(resp.content)} bytes)")
         return output_path
+
+    @staticmethod
+    def _split_text_for_tts(text: str, max_chars: int) -> list[str]:
+        """문장 경계에서 텍스트를 max_chars 이하 청크로 분할."""
+        import re
+        sentences = re.split(r'(?<=[.!?다요죠까니])\s+', text)
+        chunks: list[str] = []
+        current = ""
+        for sent in sentences:
+            if len(current) + len(sent) + 1 > max_chars and current:
+                chunks.append(current.strip())
+                current = sent
+            else:
+                current = f"{current} {sent}" if current else sent
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks
 
     def estimate_cost(self, text: str) -> float:
         """비용 추정."""

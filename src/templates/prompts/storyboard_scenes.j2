@@ -1,5 +1,10 @@
-당신은 YouTube 영상 스토리보드 디자이너입니다.
-대본의 각 섹션을 시각적 씬으로 변환하세요.
+당신은 YouTube 영상 스토리보드 감독입니다.
+대본의 각 섹션을 "의미 단위"로 분해하여 시각적 씬으로 변환하세요.
+
+## 핵심 원칙
+- 섹션 1개 = 씬 1개가 아닙니다. 의미가 바뀌면 씬을 나누세요.
+- 각 씬: 5~15초 분량 (1~3문장)
+- 문제 제기 / 사례 / 기준 / 경고 / 결론 → 각각 별개 씬
 
 ## 채널 비주얼
 - 주 색상: {{ primary_color }}
@@ -7,33 +12,54 @@
 - 강조 색상: {{ accent_color }}
 - 배경 스타일: {{ background_style }}
 
+## visual_intent (반드시 선택)
+각 씬은 아래 중 하나를 강제 지정:
+- real_broll: 실사 B-roll (도시, 생활, 현장)
+- map: 지도/지역 항공샷
+- chart: 차트/그래프/숫자 카드
+- infographic: 인포그래픽/데이터 시각화
+- checklist: 체크리스트 카드
+- comparison_card: 비교 카드 (A vs B)
+- emphasis_caption: 핵심 문장/숫자 풀스크린
+- talking_head_style: 토킹헤드 스타일
+- closing_cta: 엔딩 CTA 카드
+
+{% if niche_rules %}
+## 채널 특화 규칙
+{{ niche_rules }}
+{% endif %}
+
+## 재미 요소 (5~10초마다)
+- 큰 숫자 강조 (emphasis_caption)
+- 비교 카드 (comparison_card)
+- 체크리스트 전환 (checklist)
+- 차트/지도 인서트 (chart, map)
+- 같은 유형 3회 연속 반복 금지
+
 ## 대본 섹션
 {% for section in sections %}
 ### 섹션 {{ loop.index }}: {{ section.header }}
-- 본문 (앞 100자): {{ section.body[:100] }}...
+- 본문: {{ section.body }}
 - 예상 길이: {{ section.estimated_duration_seconds }}초
-{% if section.visual_prompt %}- 대본 내 영상 힌트: {{ section.visual_prompt }}{% endif %}
+{% if section.visual_prompt %}- 영상 힌트: {{ section.visual_prompt }}{% endif %}
 {% endfor %}
 
-## 스토리보드 규칙
-1. 각 씬의 미디어 타입을 결정하세요: AI_VIDEO(동적 장면), AI_IMAGE(정보/인포그래픽), STOCK_VIDEO(실제 영상)
-2. 스톡 영상 비율은 약 {{ stock_ratio * 100 }}%를 유지하세요
-3. 전환 효과를 다양하게 활용하세요: CUT, DISSOLVE, FADE, SLIDE
-4. 각 씬에 영문 이미지/영상 프롬프트를 작성하세요 (AI 생성용)
-5. visual_keywords로 화면에 표시할 핵심 단어를 지정하세요
+## stock_search_query 규칙
+- 반드시 영문
+- section.header가 아닌 문장 의미 기반
+- 예: "청년 첫 집 구매" → "young couple apartment viewing seoul"
+- 예: "금리 하락기 매수" → "mortgage rate chart house buying"
 
-각 씬을 JSON으로 응답하세요:
+## 출력 형식 (JSON)
 {
   "scenes": [
     {
-      "scene_number": 1,
-      "duration": 120,
-      "media_type": "AI_VIDEO",
-      "image_prompt": "Professional infographic showing...",
-      "video_prompt": "Cinematic B-roll of...",
-      "stock_search_query": "검색 키워드",
-      "transition": "DISSOLVE",
-      "visual_keywords": ["키워드1", "키워드2"]
+      "narration_text": "원문 나레이션 텍스트",
+      "visual_intent": "chart",
+      "visual_description": "구체적 시각 묘사 (한국어)",
+      "stock_search_query": "english semantic search query",
+      "visual_keywords": ["키워드1", "키워드2"],
+      "is_hook": false
     }
   ]
 }

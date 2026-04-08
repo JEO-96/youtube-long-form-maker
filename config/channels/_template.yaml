@@ -26,7 +26,8 @@ content:
 providers:
   llm: "claude"           # claude, gpt
   tts: "elevenlabs"       # elevenlabs, typecast
-  image_gen: "flux"       # flux
+  voice_id: ""            # 채널별 TTS 보이스 ID (예: ${ELEVENLABS_VOICE_ID_FINANCE})
+  image_gen: "openai"       # flux
   video_gen: "grok"       # grok, kling
 
 # 비주얼 스타일
@@ -44,6 +45,14 @@ upload:
   default_tags: []
   privacy: "private"      # private, unlisted, public
   # playlist_id: ""
+
+# 브랜딩 노출 정책
+branding:
+  show_in_video: false          # 영상 본문에 채널명 자동 삽입 여부
+  show_in_fallback: false       # fallback 비주얼에 채널명 표시 여부
+  show_in_thumbnail: true       # 썸네일에 채널명 표시 여부
+  show_in_ending: true          # 엔딩 CTA 씬에 채널명 표시 여부
+  position: "bottom_bar"        # bottom_bar, watermark, none
 
 # A/B 테스팅
 ab_test:

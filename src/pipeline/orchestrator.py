@@ -159,6 +159,38 @@ class Orchestrator:
         total_cost = self.cost.get_production_cost(production_id)
         logger.info(f"Production {production_id} COMPLETED (total cost: ${total_cost:.4f})")
 
+        # 미디어 실패 리포트 요약 출력
+        self._log_media_failure_summary(production_id)
+
+    def _log_media_failure_summary(self, production_id: str) -> None:
+        """S5 미디어 실패 리포트가 있으면 최종 요약을 로그에 출력."""
+        import json
+        from pathlib import Path
+
+        report_path = (
+            Path("data/productions") / production_id / "s5_media" / "failure_report.json"
+        )
+        if not report_path.exists():
+            return
+
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            summary = report.get("summary", {})
+            total = report.get("total_failures", 0)
+            fallback_count = summary.get("fallback_count", 0)
+            by_provider = summary.get("by_provider", {})
+            by_error = summary.get("by_error_type", {})
+
+            logger.warning(
+                f"[미디어 실패 요약] 총 {total}건 실패, "
+                f"fallback {fallback_count}건 | "
+                f"provider별: {by_provider} | "
+                f"에러별: {by_error} | "
+                f"상세: {report_path}"
+            )
+        except Exception as e:
+            logger.debug(f"실패 리포트 읽기 실패: {e}")
+
     @staticmethod
     def _generate_id(channel_id: str) -> str:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

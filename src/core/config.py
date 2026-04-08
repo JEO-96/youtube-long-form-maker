@@ -141,6 +141,7 @@ class ChannelContent(BaseModel):
 class ChannelProviders(BaseModel):
     llm: str = "claude"
     tts: str = "elevenlabs"
+    voice_id: str = ""
     image_gen: str = "flux"
     video_gen: str = "grok"
 
@@ -161,6 +162,15 @@ class ChannelUpload(BaseModel):
     playlist_id: str | None = None
 
 
+class BrandingConfig(BaseModel):
+    """채널명 노출 정책."""
+    show_in_video: bool = False       # 본문 영상에 채널명 자동 삽입
+    show_in_fallback: bool = False    # fallback 비주얼에 채널명 표시
+    show_in_thumbnail: bool = True    # 썸네일에 채널명 표시
+    show_in_ending: bool = True       # 엔딩 CTA 씬에 채널명 표시
+    position: str = "bottom_bar"      # bottom_bar, watermark, none
+
+
 class ABTestConfig(BaseModel):
     group: str = "default"
 
@@ -173,6 +183,7 @@ class ChannelConfig(BaseModel):
     providers: ChannelProviders = ChannelProviders()
     visual: ChannelVisual = ChannelVisual()
     upload: ChannelUpload = ChannelUpload()
+    branding: BrandingConfig = BrandingConfig()
     ab_test: ABTestConfig = ABTestConfig()
 
     @property
@@ -230,7 +241,7 @@ class EnvConfig(BaseSettings):
     typecast_voice_id: str = ""
     kling_api_key: str = ""
 
-    model_config = {"env_file": str(PROJECT_ROOT / ".env"), "extra": "ignore"}
+    model_config = {"env_file": str(PROJECT_ROOT / ".env"), "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 # ═══ 로더 함수 ═══
