@@ -523,6 +523,16 @@ class S5Media(BaseStage):
         if results:
             url = results[0]["url"]
             await stock.download(url, out_path)
+
+            # 검은 화면 검증: 50% 이상 검은 구간이면 reject
+            if out_path.exists() and self._is_mostly_black(out_path):
+                logger.warning(
+                    f"Scene {scene.scene_number}: stock video mostly black, "
+                    "falling back to AI image"
+                )
+                out_path.unlink(missing_ok=True)
+                return await self._generate_image(scene)
+
             return MediaAsset(
                 scene_number=scene.scene_number, media_type=MediaType.STOCK_VIDEO,
                 file_path=str(out_path), provider="pexels",
@@ -662,6 +672,9 @@ class S5Media(BaseStage):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(out_path), "PNG")
 
+        # Visual QA: 기본 품질 검증
+        self._validate_generated_image(img, out_path, scene)
+
     def _draw_chart_card(
         self, draw: ImageDraw.Draw, W: int, H: int,
         narration: str, keywords: list[str],
@@ -669,26 +682,21 @@ class S5Media(BaseStage):
     ) -> None:
         """차트/그래프 스타일 fallback."""
         import re
-        from ..core.fonts import get_korean_font
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
 
         # 상단 레이블
         draw.rectangle([(0, 0), (W, 100)], fill=accent)
-        header_font = get_korean_font(size=44, bold=True)
-        draw.text((60, 25), "DATA INSIGHT", fill="white", font=header_font)
+        draw_text_box(draw, "DATA INSIGHT", (60, 25, W - 60, 90),
+                       max_font_size=44, fill="white", max_lines=1)
 
-        # 숫자 추출
+        # 숫자 추출 + 중앙 표시
         numbers = re.findall(r'(\d+[\d,.]*\s*[%만억원배]?)', narration)
-        big_font = get_korean_font(size=120, bold=True)
-        mid_font = get_korean_font(size=36)
-
         if numbers:
-            # 큰 숫자 중앙 표시
-            main_num = numbers[0]
-            bbox = draw.textbbox((0, 0), main_num, font=big_font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((W - tw) // 2, 250), main_num, fill=accent, font=big_font)
+            draw_text_box(draw, numbers[0], (100, 200, W - 100, 400),
+                           max_font_size=120, min_font_size=60,
+                           fill=accent, align="center", max_lines=1)
 
-        # 막대 그래프 모사 (하단)
+        # 막대 그래프 모사
         bar_y_base = 700
         bar_heights = [180, 280, 220, 320, 260]
         bar_w = 120
@@ -699,9 +707,11 @@ class S5Media(BaseStage):
             color = accent if i == 3 else (*primary, 200)
             draw.rectangle([(x, bar_y_base - bh), (x + bar_w, bar_y_base)], fill=color)
 
-        # 나레이션 요약 하단
-        summary = narration[:80]
-        draw.text((60, H - 120), summary, fill=(200, 200, 210), font=mid_font)
+        # 나레이션 요약 — 자막 안전영역 위
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
+        draw_text_box(draw, narration, (60, 740, W - 60, safe_bottom),
+                       max_font_size=30, min_font_size=20,
+                       fill=(200, 200, 210), max_lines=3)
 
     def _draw_checklist_card(
         self, draw: ImageDraw.Draw, W: int, H: int,
@@ -711,21 +721,26 @@ class S5Media(BaseStage):
         """체크리스트 스타일 fallback."""
         import re
         from ..core.fonts import get_korean_font
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
 
         draw.rectangle([(0, 0), (W, 100)], fill=accent)
-        header_font = get_korean_font(size=44, bold=True)
-        draw.text((60, 25), "CHECK LIST", fill="white", font=header_font)
+        draw_text_box(draw, "CHECK LIST", (60, 25, W - 60, 90),
+                       max_font_size=44, fill="white", max_lines=1)
 
         # 문장을 항목으로 분할
         items = re.split(r'[.!?다요]\s*', narration)
-        items = [item.strip() for item in items if item.strip() and len(item.strip()) > 5][:6]
+        items = [item.strip() for item in items if item.strip() and len(item.strip()) > 5]
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
+        max_items = min(len(items), (safe_bottom - 160) // 100)
+        items = items[:max_items]
 
-        item_font = get_korean_font(size=38)
         check_font = get_korean_font(size=42, bold=True)
         y = 160
 
         for i, item in enumerate(items):
-            # 체크박스
+            if y + 80 > safe_bottom:
+                break
+
             checked = i < len(items) // 2
             box_x, box_y = 80, y + 5
             draw.rounded_rectangle(
@@ -737,12 +752,12 @@ class S5Media(BaseStage):
             if checked:
                 draw.text((box_x + 8, box_y - 5), "V", fill=accent, font=check_font)
 
-            # 텍스트
             text_color = (230, 230, 240) if checked else (160, 160, 170)
-            draw.text((160, y), item[:45], fill=text_color, font=item_font)
+            draw_text_box(draw, item, (160, y, W - 80, y + 70),
+                           max_font_size=34, min_font_size=22,
+                           fill=text_color, max_lines=2)
             y += 80
 
-            # 구분선
             if i < len(items) - 1:
                 draw.line([(160, y + 5), (W - 80, y + 5)], fill=(60, 70, 90), width=1)
                 y += 20
@@ -752,33 +767,45 @@ class S5Media(BaseStage):
         narration: str, keywords: list[str],
         accent: tuple, primary: tuple, secondary: tuple,
     ) -> None:
-        """비교 카드 스타일 fallback."""
-        from ..core.fonts import get_korean_font
+        """비교 카드 스타일 fallback — 좌우 패널 클리핑 보장."""
+        import re
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
 
-        # 중앙 분할선
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
         mid = W // 2
-        draw.line([(mid, 80), (mid, H - 80)], fill=accent, width=4)
-
-        # VS 뱃지
-        big_font = get_korean_font(size=60, bold=True)
-        draw.ellipse([(mid - 50, H // 2 - 50), (mid + 50, H // 2 + 50)], fill=accent)
-        draw.text((mid - 30, H // 2 - 35), "VS", fill="white", font=big_font)
 
         # 상단 헤더
-        header_font = get_korean_font(size=44, bold=True)
         draw.rectangle([(0, 0), (W, 80)], fill=accent)
 
-        # 비교 항목 추출
-        import re
-        parts = re.split(r'(?:vs|VS|보다|반면|그러나|하지만)', narration, maxsplit=1)
-        left_text = parts[0].strip()[:120] if parts else "Option A"
-        right_text = parts[1].strip()[:120] if len(parts) > 1 else "Option B"
+        # 비교 분리 시도
+        parts = re.split(r'(?:vs|VS|보다|반면|그러나|하지만|반대로|한편)', narration, maxsplit=1)
+        if len(parts) < 2 or len(parts[0].strip()) < 10 or len(parts[1].strip()) < 10:
+            # 비교 분리 실패 → checklist로 fallback
+            self._draw_checklist_card(draw, W, H, narration, keywords, accent, primary)
+            return
 
-        body_font = get_korean_font(size=32)
-        # 왼쪽
-        self._draw_wrapped_text(draw, left_text, body_font, 60, 140, mid - 80, (220, 225, 235))
-        # 오른쪽
-        self._draw_wrapped_text(draw, right_text, body_font, mid + 60, 140, W - 80, (220, 225, 235))
+        left_text = parts[0].strip()
+        right_text = parts[1].strip()
+
+        # 중앙 분할선
+        draw.line([(mid, 80), (mid, safe_bottom)], fill=accent, width=4)
+
+        # VS 뱃지
+        from ..core.fonts import get_korean_font
+        vs_font = get_korean_font(size=48, bold=True)
+        draw.ellipse([(mid - 40, 300), (mid + 40, 380)], fill=accent)
+        draw.text((mid - 22, 310), "VS", fill="white", font=vs_font)
+
+        # 좌우 패널 — 절대 넘어가지 않는 박스 정의
+        left_box = (60, 120, mid - 60, safe_bottom - 20)
+        right_box = (mid + 60, 120, W - 60, safe_bottom - 20)
+
+        draw_text_box(draw, left_text, left_box,
+                       max_font_size=30, min_font_size=18,
+                       fill=(220, 225, 235), max_lines=8)
+        draw_text_box(draw, right_text, right_box,
+                       max_font_size=30, min_font_size=18,
+                       fill=(220, 225, 235), max_lines=8)
 
     def _draw_emphasis_card(
         self, draw: ImageDraw.Draw, W: int, H: int,
@@ -786,37 +813,34 @@ class S5Media(BaseStage):
     ) -> None:
         """핵심 강조 캡션 스타일 fallback."""
         import re
-        from ..core.fonts import get_korean_font
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
+
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
 
         # 반투명 오버레이 효과
         draw.rectangle([(0, 0), (W, H)], fill=(*accent, 40))
 
-        # 큰 숫자가 있으면 크게
+        # 큰 숫자
         numbers = re.findall(r'(\d+[\d,.]*\s*[%만억원배]?)', narration)
         if numbers:
-            huge_font = get_korean_font(size=160, bold=True)
-            bbox = draw.textbbox((0, 0), numbers[0], font=huge_font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((W - tw) // 2, 200), numbers[0], fill="white", font=huge_font)
+            draw_text_box(draw, numbers[0], (100, 150, W - 100, 380),
+                           max_font_size=140, min_font_size=72,
+                           fill="white", align="center", max_lines=1)
 
-        # 핵심 문장 (중앙)
-        key_font = get_korean_font(size=56, bold=True)
-        # 핵심 키워드 또는 첫 문장
+        # 핵심 키워드
+        y_pos = 420 if numbers else 280
         key_text = keywords[0] if keywords else narration[:40]
-        bbox = draw.textbbox((0, 0), key_text, font=key_font)
-        tw = bbox[2] - bbox[0]
-        y_pos = 500 if numbers else 350
-        draw.text(((W - tw) // 2, y_pos), key_text, fill="white", font=key_font)
-
-        # 보조 설명
-        sub_font = get_korean_font(size=32)
-        sub_text = narration[:80]
-        bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
-        tw = bbox[2] - bbox[0]
-        draw.text(((W - tw) // 2, y_pos + 100), sub_text, fill=(200, 200, 210), font=sub_font)
+        draw_text_box(draw, key_text, (100, y_pos, W - 100, y_pos + 120),
+                       max_font_size=56, min_font_size=32,
+                       fill="white", align="center", max_lines=2)
 
         # 강조 밑줄
-        draw.rectangle([(W // 4, y_pos + 80), (3 * W // 4, y_pos + 86)], fill=accent)
+        draw.rectangle([(W // 4, y_pos + 100), (3 * W // 4, y_pos + 106)], fill=accent)
+
+        # 보조 설명 — 자막 안전영역 위
+        draw_text_box(draw, narration, (120, y_pos + 140, W - 120, safe_bottom),
+                       max_font_size=28, min_font_size=18,
+                       fill=(200, 200, 210), align="center", max_lines=4)
 
     def _draw_infographic_card(
         self, draw: ImageDraw.Draw, W: int, H: int,
@@ -825,21 +849,22 @@ class S5Media(BaseStage):
     ) -> None:
         """인포그래픽 스타일 fallback."""
         from ..core.fonts import get_korean_font
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
+
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
 
         draw.rectangle([(0, 0), (W, 100)], fill=accent)
-        header_font = get_korean_font(size=44, bold=True)
-        draw.text((60, 25), "INFO", fill="white", font=header_font)
-
-        # 키워드를 아이콘 박스로 배치
-        box_font = get_korean_font(size=30)
-        label_font = get_korean_font(size=26)
+        draw_text_box(draw, "INFO", (60, 25, W - 60, 90),
+                       max_font_size=44, fill="white", max_lines=1)
 
         items = keywords[:4] if keywords else ["Point 1", "Point 2", "Point 3"]
         cols = min(len(items), 3)
-        box_w, box_h = 400, 200
+        box_w, box_h = 400, 180
         gap = 60
         start_x = (W - (cols * box_w + (cols - 1) * gap)) // 2
-        y = 200
+        y = 160
+
+        box_font = get_korean_font(size=30)
 
         for i, item in enumerate(items):
             row = i // cols
@@ -847,56 +872,60 @@ class S5Media(BaseStage):
             x = start_x + col * (box_w + gap)
             cy = y + row * (box_h + gap)
 
-            # 카드 박스
+            if cy + box_h > safe_bottom - 60:
+                break
+
             draw.rounded_rectangle(
                 [(x, cy), (x + box_w, cy + box_h)],
-                radius=15,
-                fill=(*primary, 180),
-                outline=accent,
-                width=2,
+                radius=15, fill=(*primary, 180), outline=accent, width=2,
             )
-            # 넘버 뱃지
             draw.ellipse([(x + 20, cy + 20), (x + 70, cy + 70)], fill=accent)
             draw.text((x + 35, cy + 25), str(i + 1), fill="white", font=box_font)
-            # 텍스트
-            draw.text((x + 90, cy + 30), item[:20], fill=(230, 230, 240), font=box_font)
+            draw_text_box(draw, item, (x + 90, cy + 20, x + box_w - 20, cy + box_h - 20),
+                           max_font_size=28, min_font_size=18,
+                           fill=(230, 230, 240), max_lines=3)
 
-        # 나레이션 하단
-        mid_font = get_korean_font(size=32)
-        draw.text((60, H - 150), narration[:100], fill=(180, 180, 190), font=mid_font)
+        # 나레이션 — 자막 안전영역 위
+        draw_text_box(draw, narration, (60, safe_bottom - 100, W - 60, safe_bottom),
+                       max_font_size=26, min_font_size=18,
+                       fill=(180, 180, 190), max_lines=2)
 
     def _draw_cta_card(
         self, draw: ImageDraw.Draw, W: int, H: int,
         accent: tuple, primary: tuple,
     ) -> None:
         """CTA 엔딩 카드 fallback."""
-        from ..core.fonts import get_korean_font
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
 
-        # 중앙 큰 텍스트
-        big_font = get_korean_font(size=72, bold=True)
-        draw.text((W // 2 - 300, 300), "SUBSCRIBE", fill="white", font=big_font)
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
 
-        # 구독 버튼 모사
+        draw_text_box(draw, "SUBSCRIBE", (100, 250, W - 100, 400),
+                       max_font_size=72, fill="white", align="center", max_lines=1)
+
+        # 구독 버튼
         btn_w, btn_h = 400, 80
         btn_x = (W - btn_w) // 2
-        btn_y = 500
+        btn_y = 450
         draw.rounded_rectangle(
             [(btn_x, btn_y), (btn_x + btn_w, btn_y + btn_h)],
             radius=10, fill=accent,
         )
-        btn_font = get_korean_font(size=36, bold=True)
-        draw.text((btn_x + 100, btn_y + 18), "구독하기", fill="white", font=btn_font)
+        draw_text_box(draw, "구독하기", (btn_x, btn_y + 15, btn_x + btn_w, btn_y + btn_h),
+                       max_font_size=36, fill="white", align="center", max_lines=1)
 
-        # 좋아요 + 알림
-        sub_font = get_korean_font(size=32)
-        draw.text((W // 2 - 200, btn_y + 120), "좋아요 & 알림 설정", fill=(200, 200, 210), font=sub_font)
+        draw_text_box(draw, "좋아요 & 알림 설정",
+                       (W // 2 - 250, btn_y + 110, W // 2 + 250, btn_y + 170),
+                       max_font_size=32, fill=(200, 200, 210), align="center", max_lines=1)
 
         # 브랜딩
         show_branding = getattr(self.channel.branding, 'show_in_ending', True)
         if show_branding:
-            brand_font = get_korean_font(size=30)
             channel_name = getattr(self.channel, 'channel_name', '')
-            draw.text((W // 2 - 100, H - 100), channel_name, fill=(180, 180, 190), font=brand_font)
+            if channel_name:
+                draw_text_box(draw, channel_name,
+                               (W // 2 - 200, safe_bottom - 50, W // 2 + 200, safe_bottom),
+                               max_font_size=30, fill=(180, 180, 190),
+                               align="center", max_lines=1)
 
     def _draw_default_card(
         self, draw: ImageDraw.Draw, W: int, H: int,
@@ -904,43 +933,106 @@ class S5Media(BaseStage):
         accent: tuple, primary: tuple,
     ) -> None:
         """기본 카드뉴스 스타일 fallback (REAL_BROLL, MAP 등)."""
-        from ..core.fonts import get_korean_font
+        from ..core.text_render import draw_text_box, SUBTITLE_SAFE_MARGIN
+
+        safe_bottom = H - SUBTITLE_SAFE_MARGIN
 
         # 헤더바
         draw.rectangle([(0, 0), (W, 120)], fill=accent)
-        header_font = get_korean_font(size=48, bold=True)
-        title = vis_desc[:50] or narration[:40]
-        draw.text((60, 35), title, fill="white", font=header_font)
+        title = vis_desc[:80] or narration[:60]
+        draw_text_box(draw, title, (60, 30, W - 60, 110),
+                       max_font_size=44, min_font_size=28,
+                       fill="white", max_lines=2)
 
         # 본문
-        body_font = get_korean_font(size=36)
-        y_pos = 180
-        for i in range(0, min(len(narration), 420), 35):
-            chunk = narration[i:i + 35]
-            if chunk:
-                draw.text((80, y_pos), f">> {chunk}", fill=(220, 225, 235), font=body_font)
-                y_pos += 60
-                if y_pos > 900:
-                    break
+        draw_text_box(draw, narration, (80, 160, W - 80, safe_bottom),
+                       max_font_size=32, min_font_size=20,
+                       fill=(220, 225, 235), max_lines=12)
 
         # 좌측 장식선
-        draw.rectangle([(0, 120), (8, H - 80)], fill=accent)
-        # 하단바
-        draw.rectangle([(0, H - 80), (W, H)], fill=accent)
+        draw.rectangle([(0, 120), (8, safe_bottom)], fill=accent)
 
     @staticmethod
-    def _draw_wrapped_text(
-        draw: ImageDraw.Draw, text: str, font: Any,
-        x: int, y: int, max_x: int, fill: tuple,
-    ) -> None:
-        """지정 영역 내 줄바꿈 텍스트."""
-        max_width = max_x - x
-        chars_per_line = max(max_width // 20, 10)
-        lines: list[str] = []
-        for i in range(0, len(text), chars_per_line):
-            lines.append(text[i:i + chars_per_line])
-        for i, line in enumerate(lines[:10]):
-            draw.text((x, y + i * 50), line, fill=fill, font=font)
+    def _validate_generated_image(img: Image.Image, path: Path, scene: Any) -> None:
+        """생성된 이미지의 기본 품질 검증."""
+        from ..core.text_render import SUBTITLE_SAFE_MARGIN
+        import numpy as np
+
+        w, h = img.size
+        subtitle_y = h - SUBTITLE_SAFE_MARGIN
+
+        # 1. 전체 프레임 평균 밝기 (너무 어둡거나 너무 밝으면 경고)
+        try:
+            arr = np.array(img.convert("L"))
+            mean_brightness = arr.mean()
+            if mean_brightness < 15:
+                logger.warning(
+                    f"Visual QA: {path.name} scene {scene.scene_number} "
+                    f"too dark (brightness={mean_brightness:.0f})"
+                )
+            elif mean_brightness > 245:
+                logger.warning(
+                    f"Visual QA: {path.name} scene {scene.scene_number} "
+                    f"too bright (brightness={mean_brightness:.0f})"
+                )
+
+            # 2. 자막 안전영역 침범 검사: subtitle zone에 비배경 콘텐츠가 있는지
+            # 자막 영역의 분산이 높으면 콘텐츠가 있을 가능성
+            sub_zone = arr[subtitle_y:, :]
+            if sub_zone.std() > 40:
+                logger.info(
+                    f"Visual QA: {path.name} scene {scene.scene_number} "
+                    f"content near subtitle zone (std={sub_zone.std():.0f})"
+                )
+        except ImportError:
+            pass  # numpy 없으면 스킵
+        except Exception as e:
+            logger.debug(f"Visual QA failed: {e}")
+
+    @staticmethod
+    def _is_mostly_black(video_path: Path, threshold: float = 0.4) -> bool:
+        """비디오에서 검은 구간 비율을 검사. threshold 이상이면 True.
+
+        ffmpeg blackdetect로 검은 구간 감지 후 전체 대비 비율 계산.
+        """
+        import subprocess, re
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(video_path),
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            total_dur = float(result.stdout.strip()) if result.stdout.strip() else 0
+            if total_dur <= 0:
+                return False
+
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-i", str(video_path),
+                    "-vf", "blackdetect=d=0.5:pix_th=0.10",
+                    "-an", "-f", "null", "-",
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            black_total = 0.0
+            for match in re.finditer(r"black_duration:(\d+\.?\d*)", result.stderr):
+                black_total += float(match.group(1))
+
+            ratio = black_total / total_dur
+            if ratio > threshold:
+                logger.info(
+                    f"Black detect: {video_path.name} → "
+                    f"{black_total:.1f}s/{total_dur:.1f}s ({ratio:.0%} black)"
+                )
+            return ratio > threshold
+        except Exception as e:
+            logger.debug(f"Black detect failed for {video_path}: {e}")
+            return False
 
     def _create_placeholder_image(
         self, path: Path, scene: Scene, label: str = ""

@@ -147,6 +147,19 @@ class ElevenLabsTTS(TTSProvider):
         if resp.status_code == 200:
             return
         if resp.status_code == 401:
+            # ElevenLabs는 quota 초과도 401로 반환하는 경우가 있음
+            try:
+                body = resp.json()
+                detail = body.get("detail", {})
+                if isinstance(detail, dict) and detail.get("status") == "quota_exceeded":
+                    raise QuotaExhaustedError(
+                        "elevenlabs",
+                        message=detail.get("message", "Quota exceeded"),
+                    )
+            except (QuotaExhaustedError,):
+                raise
+            except Exception:
+                pass
             raise ProviderError("elevenlabs", "Authentication failed: invalid API key", retryable=False)
         if resp.status_code == 429:
             retry_after = float(resp.headers.get("retry-after", "60"))
