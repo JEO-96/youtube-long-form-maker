@@ -654,14 +654,23 @@ class S5Media(BaseStage):
 
         # ═══ intent별 레이아웃 분기 (visual_templates 모듈 사용) ═══
         if intent == VisualIntent.CHART:
-            # 숫자가 없으면 chart를 쓰지 않고 fallback
+            # 숫자가 없으면 chart를 쓰지 않고 fallback (반복 방지를 위해 분산)
             has_data = vt.can_draw_chart(narration)
             if not has_data:
+                scene_num = getattr(scene, 'scene_number', 0)
+                fallback_type = scene_num % 3  # 0=checklist, 1=emphasis, 2=infographic
+                if fallback_type == 0:
+                    fb_name = "checklist"
+                    vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
+                elif fallback_type == 1:
+                    fb_name = "emphasis"
+                    vt.draw_emphasis_card(draw, narration, keywords, accent, vis_desc)
+                else:
+                    fb_name = "infographic"
+                    vt.draw_infographic_card(draw, narration, keywords, accent, primary, vis_desc)
                 logger.info(
-                    f"Scene {getattr(scene, 'scene_number', '?')}: "
-                    "no numeric data for chart → emphasis fallback"
+                    f"Scene {scene_num}: no numeric data for chart → {fb_name} fallback"
                 )
-                vt.draw_emphasis_card(draw, narration, keywords, accent, vis_desc)
             else:
                 variant = vt._select_chart_variant(narration)
                 if variant == "gauge":
