@@ -289,8 +289,48 @@ def _select_chart_variant(narration: str) -> str:
     if len(numbers) == 1 and len(years) < 2:
         return "kpi_only"
 
+    # 단위 혼합 감지: 같은 단위끼리만 bar chart 허용
+    if len(numbers) >= 2 and _has_mixed_units(numbers):
+        return "kpi_only"  # 단위 섞이면 KPI 카드로
+
     # default: 비교 bar
     return "kpi_bar"
+
+
+def _classify_unit(num_str: str) -> str:
+    """숫자 문자열의 단위를 분류."""
+    num_str = num_str.strip()
+    if '%' in num_str:
+        return "percent"
+    if '배' in num_str:
+        return "multiple"
+    if '억' in num_str:
+        return "billion"
+    if '만' in num_str:
+        if '호' in num_str:
+            return "units"
+        if '원' in num_str or '건' in num_str:
+            return "money"
+        return "ten_thousand"
+    if '년' in num_str or re.match(r'^(19|20)\d{2}$', num_str.strip()):
+        return "year"
+    # 단위 없는 순수 숫자
+    return "plain"
+
+
+def _has_mixed_units(numbers: list[str]) -> bool:
+    """숫자 목록의 단위가 섞여 있는지 판별.
+
+    같은 단위끼리만 bar chart로 묶을 수 있음.
+    예: [9배, 12배, 15배] → False (동일 단위)
+    예: [2026년, 40%, 27만 호] → True (혼합)
+    """
+    if len(numbers) < 2:
+        return False
+    units = {_classify_unit(n) for n in numbers}
+    # plain은 무시 (단위 없는 숫자는 어디든 호환)
+    units.discard("plain")
+    return len(units) > 1
 
 
 def _extract_y_unit(narration: str, keywords: list[str]) -> str:
@@ -430,9 +470,10 @@ def draw_chart_kpi_only(
                    max_font_size=28, fill=(180, 185, 200), align="center", max_lines=1)
 
     # 나레이션
-    draw_text_box(draw, narration, (100, 440, W - 100, SAFE_BOTTOM - 30),
+    draw_text_box(draw, narration, (100, 440, W - 100, SAFE_BOTTOM - 60),
                    max_font_size=26, min_font_size=18, fill=(190, 190, 200),
                    align="center", max_lines=6)
+    _draw_badge(draw, W - 200, SAFE_BOTTOM - 55, "예시 시각화", (140, 140, 150), (45, 55, 70))
     _draw_footer(draw, W)
 
 
@@ -563,8 +604,9 @@ def draw_chart_gauge(
         _draw_kpi_card(draw, 80, 150, 280, 80,
                        keywords[0] if keywords else "지표", numbers[1], accent, (40, 50, 70))
 
-    draw_text_box(draw, narration, (80, 620, W - 80, SAFE_BOTTOM - 30),
+    draw_text_box(draw, narration, (80, 620, W - 80, SAFE_BOTTOM - 60),
                    max_font_size=22, min_font_size=16, fill=(190, 190, 200), max_lines=4)
+    _draw_badge(draw, W - 200, SAFE_BOTTOM - 55, "예시 시각화", (140, 140, 150), (45, 55, 70))
     _draw_footer(draw, W)
 
 
