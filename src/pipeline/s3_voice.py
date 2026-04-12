@@ -17,9 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_channel_voice_id(raw_voice_id: str) -> str:
-    """채널 설정의 보이스 ID를 안전하게 정규화."""
+    """채널 설정의 보이스 ID를 안전하게 정규화 — 환경변수 치환 포함."""
+    import os
     voice_id = raw_voice_id.strip()
     if voice_id.startswith("${") and voice_id.endswith("}"):
+        env_key = voice_id[2:-1]
+        resolved = os.getenv(env_key, "")
+        if resolved:
+            return resolved
         return ""
     return voice_id
 
@@ -45,6 +50,11 @@ class S3Voice(BaseStage):
         tts_provider_name = self.channel.providers.tts
         channel_voice_id = _resolve_channel_voice_id(self.channel.providers.voice_id)
         tts = create_tts(tts_provider_name, fallback="elevenlabs")
+
+        logger.info(
+            f"TTS: provider={tts_provider_name}, voice_id={channel_voice_id!r}, "
+            f"text_len={len(script.full_text)}"
+        )
 
         await tts.synthesize(
             script.full_text,
@@ -350,10 +360,10 @@ class S3Voice(BaseStage):
     def _mock_result(
         self, script: ScriptResult, audio_path: Path, srt_path: Path
     ) -> VoiceResult:
-        """Mock: 10초짜리 테스트 오디오 + 가상 타임스탬프."""
-        # 실제 wav 파일 생성 (테스트용 1초짜리 무음 + 톤)
+        """Mock: 대본 길이에 비례하는 테스트 오디오 + 가상 타임스탬프."""
+        # 대본 estimated_duration 기반, 최소 10초 / 최대 60초
         duration_ms = int(script.estimated_duration_seconds * 1000) if script.estimated_duration_seconds > 0 else 10000
-        duration_ms = min(duration_ms, 10000)  # mock은 최대 10초
+        duration_ms = max(10000, min(duration_ms, 60000))
 
         audio = AudioSegment.silent(duration=500)
         audio += Sine(440).to_audio_segment(duration=duration_ms - 1000).apply_gain(-10)
@@ -362,17 +372,23 @@ class S3Voice(BaseStage):
 
         total_dur = duration_ms / 1000.0
 
-        # 가상 세그먼트
+        # 가상 세그먼트 — 글자수 비례 배분
         segments = []
         t = 0.5
-        for sec in script.sections:
-            seg_dur = min(sec.estimated_duration_seconds, (total_dur - t) * 0.9)
-            if seg_dur <= 0:
-                break
+        usable_dur = total_dur - 1.0  # 앞뒤 0.5초 마진
+        char_counts = [max(len(sec.body), 10) for sec in script.sections]
+        total_chars = sum(char_counts)
+        for i, sec in enumerate(script.sections):
+            seg_dur = (char_counts[i] / total_chars) * usable_dur
+            seg_dur = max(1.0, seg_dur)
+            if t + seg_dur > total_dur - 0.3:
+                seg_dur = max(1.0, total_dur - t - 0.3)
             segments.append(TimedSegment(
                 text=sec.body[:50], start=round(t, 2), end=round(t + seg_dur, 2),
             ))
             t += seg_dur + 0.3
+            if t >= total_dur:
+                break
 
         # SRT 생성
         srt_lines = []

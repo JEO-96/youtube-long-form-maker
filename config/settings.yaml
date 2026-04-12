@@ -18,8 +18,9 @@ video:
     crf: 23
 
 media_generation:
-  concurrency_limit: 3  # asyncio.Semaphore
+  concurrency_limit: 5  # asyncio.Semaphore (3→5, 최대 6)
   stock_mix_ratio: 0.2  # 20% 스톡 영상 혼합
+  prefer_local_render: true  # chart/card/checklist → Pillow 로컬 렌더 우선 (API 호출 절약)
 
 retention:
   hook_duration_seconds: 5

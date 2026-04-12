@@ -71,6 +71,20 @@ class StateManager:
 
                 CREATE INDEX IF NOT EXISTS idx_costs_production
                     ON cost_entries(production_id);
+
+                CREATE TABLE IF NOT EXISTS stage_timings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    production_id TEXT NOT NULL,
+                    stage_name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    error TEXT DEFAULT '',
+                    FOREIGN KEY (production_id) REFERENCES productions(production_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_stage_timings_production
+                    ON stage_timings(production_id);
             """)
 
     @contextmanager
@@ -256,6 +270,33 @@ class StateManager:
         with self._connect() as conn:
             row = conn.execute(query, params).fetchone()
         return float(row["total"]) if row else 0.0
+
+    def record_stage_timing(
+        self,
+        production_id: str,
+        stage_name: str,
+        started_at: str,
+        completed_at: str,
+        duration_seconds: float,
+        error: str = "",
+    ) -> None:
+        """스테이지 실행 시간 기록."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO stage_timings
+                   (production_id, stage_name, started_at, completed_at, duration_seconds, error)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (production_id, stage_name, started_at, completed_at, duration_seconds, error),
+            )
+
+    def get_stage_timings(self, production_id: str) -> list[dict]:
+        """스테이지별 실행 시간 조회."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM stage_timings WHERE production_id=? ORDER BY id",
+                (production_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def _update_state_json(self, production_id: str) -> None:
         """SQLite 상태를 state.json에 동기화 (파이프라인 실패 방지를 위해 예외 무시)."""

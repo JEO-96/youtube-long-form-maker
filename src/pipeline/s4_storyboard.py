@@ -73,17 +73,19 @@ INTENT_TO_MEDIA_TYPE: dict[VisualIntent, MediaType] = {
     VisualIntent.CLOSING_CTA: MediaType.AI_IMAGE,
 }
 
-# visual_intent별 영문 stock_search_query 프리셋 (B-roll 힌트)
+# visual_intent별 영문 stock_search_query 폴백 힌트
+# 주의: 이 힌트는 _generate_stock_query에서 키워드 매칭 실패 시에만 사용.
+# 가능한 한 문장 의미 기반 쿼리가 우선.
 INTENT_STOCK_HINTS: dict[VisualIntent, str] = {
-    VisualIntent.REAL_BROLL: "cinematic urban lifestyle",
-    VisualIntent.MAP: "aerial city drone shot",
-    VisualIntent.CHART: "financial data dashboard screen",
-    VisualIntent.INFOGRAPHIC: "infographic presentation screen",
-    VisualIntent.CHECKLIST: "person checking list clipboard",
-    VisualIntent.COMPARISON_CARD: "comparison split screen concept",
-    VisualIntent.EMPHASIS_CAPTION: "dramatic spotlight text reveal",
-    VisualIntent.TALKING_HEAD_STYLE: "professional speaker presentation",
-    VisualIntent.CLOSING_CTA: "subscribe notification bell animation",
+    VisualIntent.REAL_BROLL: "real life scene lifestyle",
+    VisualIntent.MAP: "aerial city map drone",
+    VisualIntent.CHART: "chart graph data visualization",
+    VisualIntent.INFOGRAPHIC: "infographic diagram process flow",
+    VisualIntent.CHECKLIST: "checklist clipboard planning document",
+    VisualIntent.COMPARISON_CARD: "comparison side by side split",
+    VisualIntent.EMPHASIS_CAPTION: "bold text highlight emphasis",
+    VisualIntent.TALKING_HEAD_STYLE: "expert speaker explaining concept",
+    VisualIntent.CLOSING_CTA: "subscribe button youtube ending card",
 }
 
 
@@ -121,6 +123,9 @@ class S4Storyboard(BaseStage):
 
         # ═══ 재미 요소 다양성 검증 + 강제 삽입 ═══
         self._enforce_visual_variety(raw_scenes)
+
+        # ═══ generic query 후처리 — 일반적 쿼리를 니치 기반으로 재작성 ═══
+        self._fix_generic_queries(raw_scenes, niche)
 
         # ═══ 타이밍 계산 (음성 세그먼트 기반) ═══
         self._apply_timing(raw_scenes, voice, script)
@@ -187,6 +192,8 @@ class S4Storyboard(BaseStage):
 1. 섹션 = 씬이 아닙니다. 한 섹션 안에서도 의미가 바뀌면 씬을 나누세요.
    - 문제 제기 / 사례 / 기준 / 경고 / 결론 → 각각 별개 씬
    - 목표: 씬 1개 = 5~15초 분량 (내레이션 1~3문장)
+   - 최소 10개 이상의 씬으로 분해하세요. 6개 이하는 절대 안 됩니다.
+   - 긴 설명형 주제라면 15~25개 씬이 적절합니다.
 
 2. 각 씬의 visual_intent를 반드시 아래 중 하나로 지정하세요:
    {intent_options}
@@ -202,8 +209,11 @@ class S4Storyboard(BaseStage):
 
 3. stock_search_query는 반드시 영문이고, 문장 의미에 직접 연결하세요.
    나쁜 예: "부동산 분석" → "real estate analysis"
+   나쁜 예: "cinematic urban lifestyle" → 너무 일반적
    좋은 예: "청년 첫 집 구매 시점" → "young couple apartment viewing seoul"
    좋은 예: "금리 하락기 매수" → "mortgage rate chart house buying concept"
+   좋은 예: "체크리스트" → "home buying checklist clipboard planning"
+   좋은 예: "구독 CTA" → "clean subscribe card minimal youtube ending"
 
 4. 5~10초마다 시각적 재미 요소를 넣으세요:
    - 큰 숫자 강조 (emphasis_caption)
@@ -288,6 +298,39 @@ JSON으로만 응답하세요:
         if not scenes:
             raise ValueError("LLM이 빈 씬 목록을 반환")
 
+        # 최소 씬 수 검증 — 6개 이하면 규칙 기반 보강
+        if len(scenes) < 8 and len(script.sections) >= 2:
+            logger.warning(
+                f"LLM 씬 분해 결과가 너무 적음: {len(scenes)}개 → "
+                f"규칙 기반 보강 시도"
+            )
+            # LLM 결과는 유지하되, 긴 narration을 가진 씬을 추가 분할
+            expanded: list[Scene] = []
+            for sc in scenes:
+                if len(sc.narration_text) > 150:
+                    # 긴 내레이션을 2개로 분할
+                    mid = len(sc.narration_text) // 2
+                    for offset in range(50):
+                        pos = mid + offset
+                        if pos < len(sc.narration_text) and sc.narration_text[pos] in '.!?다요죠까니':
+                            mid = pos + 1
+                            break
+                        pos = mid - offset
+                        if pos > 0 and sc.narration_text[pos] in '.!?다요죠까니':
+                            mid = pos + 1
+                            break
+                    niche = getattr(self.channel, "niche", "")
+                    part1 = sc.narration_text[:mid].strip()
+                    part2 = sc.narration_text[mid:].strip()
+                    if part1 and part2:
+                        sc.narration_text = part1
+                        expanded.append(sc)
+                        expanded.append(self._make_scene_from_text(part2, "", niche))
+                        continue
+                expanded.append(sc)
+            scenes = expanded
+            logger.info(f"보강 후 씬 수: {len(scenes)}")
+
         logger.info(f"LLM 씬 분해: {len(scenes)} scenes from {len(script.sections)} sections")
         return scenes
 
@@ -302,34 +345,40 @@ JSON으로만 응답하세요:
         transitions = [TransitionType.CUT, TransitionType.DISSOLVE,
                        TransitionType.FADE, TransitionType.SLIDE, TransitionType.ZOOM]
 
-        # Hook 씬
+        # Hook 씬 — 내레이션 의미 반영 query 생성
+        hook_query = self._generate_stock_query(script.hook, VisualIntent.EMPHASIS_CAPTION)
         scenes.append(Scene(
             scene_number=1,
             start_time=0.0, end_time=0.0, duration=0.0,
             narration_text=script.hook,
-            visual_description="강렬한 오프닝 — 시청자 이목을 끄는 장면",
+            visual_description=f"강렬한 오프닝 — {script.hook[:60]}",
             visual_intent=VisualIntent.EMPHASIS_CAPTION,
             media_type=MediaType.AI_IMAGE,
-            image_prompt=f"Bold dramatic opening, large text emphasis, {script.hook[:50]}",
+            image_prompt=self._build_image_prompt(
+                VisualIntent.EMPHASIS_CAPTION,
+                f"강렬한 오프닝 — {script.hook[:60]}",
+                hook_query,
+            ),
             video_prompt=f"Cinematic opening shot, dramatic lighting",
-            stock_search_query="dramatic opening cinematic reveal",
+            stock_search_query=hook_query,
             transition=TransitionType.FADE,
             is_hook=True,
             visual_keywords=self._extract_keywords(script.hook)[:3],
         ))
 
-        # Intro 씬 (있으면)
+        # Intro 씬 (있으면) — 내레이션 의미 반영
         if script.intro and len(script.intro) > 20:
+            intro_query = self._generate_stock_query(script.intro, VisualIntent.TALKING_HEAD_STYLE)
             scenes.append(Scene(
                 scene_number=2,
                 start_time=0.0, end_time=0.0, duration=0.0,
                 narration_text=script.intro,
-                visual_description="도입 — 오늘 주제를 간결하게 소개",
+                visual_description=f"도입 — {script.intro[:60]}",
                 visual_intent=VisualIntent.TALKING_HEAD_STYLE,
                 media_type=MediaType.STOCK_VIDEO,
                 image_prompt="Professional presenter speaking to camera",
                 video_prompt="Professional speaker presentation style",
-                stock_search_query="professional speaker presentation studio",
+                stock_search_query=intro_query,
                 transition=TransitionType.DISSOLVE,
                 visual_keywords=self._extract_keywords(script.intro)[:3],
             ))
@@ -350,8 +399,12 @@ JSON으로만 응답하세요:
             visual_description="구독 유도 엔딩 — CTA 카드",
             visual_intent=VisualIntent.CLOSING_CTA,
             media_type=MediaType.AI_IMAGE,
-            image_prompt="Subscribe button animation, channel CTA card, professional ending",
-            stock_search_query="subscribe notification bell youtube",
+            image_prompt=self._build_image_prompt(
+                VisualIntent.CLOSING_CTA,
+                "구독 유도 엔딩 — CTA 카드",
+                "subscribe button youtube ending card",
+            ),
+            stock_search_query="subscribe button youtube ending card",
             transition=TransitionType.FADE,
             visual_keywords=["구독", "좋아요", "알림"],
         ))
@@ -362,7 +415,13 @@ JSON으로만 응답하세요:
     def _split_section_to_scenes(
         self, body: str, header: str, niche: str,
     ) -> list[Scene]:
-        """섹션 본문을 의미 단위(2~3문장)로 분할하여 씬 목록 반환."""
+        """섹션 본문을 의미 단위(1~2문장)로 분할하여 씬 목록 반환.
+
+        개선점:
+        - 그룹핑 기준을 150자 → 100자로 축소하여 더 잘게 분할
+        - 의미 전환 키워드(하지만, 반면, 그런데 등)에서 강제 분할
+        - 최소 그룹 2개 보장
+        """
         # 문장 분리 (한국어 종결어미 + 마침표/물음표/느낌표)
         sentences = re.split(r'(?<=[.!?다요죠까니])\s+', body.strip())
         sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]
@@ -370,11 +429,23 @@ JSON으로만 응답하세요:
         if not sentences:
             return [self._make_scene_from_text(body, header, niche)]
 
-        # 2~3문장씩 그룹핑 (너무 짧으면 합치기)
+        # 의미 전환 패턴 — 이 키워드가 문장 시작에 오면 강제 분할
+        _SPLIT_TRIGGERS = [
+            "하지만", "반면", "그런데", "그러나", "한편", "반대로",
+            "예를 들어", "실제로", "결론적으로", "핵심은", "정리하면",
+            "첫째", "둘째", "셋째", "넷째", "1.", "2.", "3.", "4.",
+            "주의할", "중요한", "문제는",
+        ]
+
+        # 1~2문장씩 그룹핑 (100자 기준 + 의미 전환 시 강제 분할)
         groups: list[str] = []
         current = ""
         for sent in sentences:
-            if len(current) + len(sent) > 150 and current:
+            # 의미 전환 키워드로 시작하면 현재 그룹 확정
+            is_split_trigger = any(sent.startswith(t) for t in _SPLIT_TRIGGERS)
+
+            if (len(current) + len(sent) > 100 and current) or \
+               (is_split_trigger and current):
                 groups.append(current.strip())
                 current = sent
             else:
@@ -384,7 +455,7 @@ JSON으로만 응답하세요:
             groups.append(current.strip())
 
         # 그룹이 1개면 최소 2개로 분할 시도
-        if len(groups) == 1 and len(body) > 100:
+        if len(groups) == 1 and len(body) > 80:
             mid = len(body) // 2
             # 가장 가까운 문장 경계 찾기
             for offset in range(50):
@@ -425,6 +496,49 @@ JSON으로만 응답하세요:
             stock_search_query=stock_query,
             visual_keywords=keywords[:5],
         )
+
+    # ═══════════════════════════════════════════════════
+    # Generic query 후처리
+    # ═══════════════════════════════════════════════════
+
+    _GENERIC_PATTERNS = [
+        "modern concept illustration",
+        "cinematic urban lifestyle",
+        "professional modern",
+        "dramatic opening",
+        "concept illustration",
+    ]
+
+    def _fix_generic_queries(self, scenes: list, niche: str) -> None:
+        """generic stock_search_query를 내레이션 키워드 기반으로 재작성."""
+        fixed = 0
+        for scene in scenes:
+            q = scene.stock_search_query.lower().strip()
+            is_generic = any(p in q for p in self._GENERIC_PATTERNS)
+            if not is_generic:
+                continue
+
+            # 내레이션에서 키워드 재추출하여 쿼리 재생성
+            new_query = self._generate_stock_query(
+                scene.narration_text, scene.visual_intent,
+            )
+            # 재생성된 것도 여전히 generic이면 AI 이미지 유형으로 전환
+            still_generic = any(p in new_query.lower() for p in self._GENERIC_PATTERNS)
+            if still_generic:
+                scene.media_type = MediaType.AI_IMAGE
+                scene.stock_search_query = ""  # AI 생성이므로 스톡 쿼리 불필요
+                logger.info(
+                    f"Scene {scene.scene_number}: generic query → AI_IMAGE fallback"
+                )
+            else:
+                scene.stock_search_query = new_query
+                logger.info(
+                    f"Scene {scene.scene_number}: generic query → '{new_query}'"
+                )
+            fixed += 1
+
+        if fixed:
+            logger.info(f"Fixed {fixed} generic stock queries")
 
     # ═══════════════════════════════════════════════════
     # 시각 의도 추론 (키워드 기반)
@@ -481,28 +595,65 @@ JSON으로만 응답하세요:
     }
 
     def _generate_stock_query(self, text: str, intent: VisualIntent) -> str:
-        """한국어 텍스트에서 영문 스톡 검색 쿼리 생성."""
+        """한국어 텍스트에서 영문 스톡 검색 쿼리 생성.
+
+        원칙: generic 쿼리("cinematic urban lifestyle") 대신
+        문장 의미에 직접 연결되는 구체적 검색어를 생성한다.
+        """
         parts: list[str] = []
 
-        # 키워드 매칭
+        # 키워드 매칭 (문장 의미 기반)
         for ko, en in self._KO_TO_EN_MAP.items():
             if ko in text:
                 parts.append(en)
                 if len(parts) >= 3:
                     break
 
-        # intent 기반 힌트 추가
-        hint = INTENT_STOCK_HINTS.get(intent, "")
-        if hint and hint not in " ".join(parts):
-            parts.append(hint)
+        # intent별 구체적 컨텍스트 추가 (generic 힌트 대신)
+        intent_context: dict[VisualIntent, str] = {
+            VisualIntent.CHART: "chart graph data visualization",
+            VisualIntent.INFOGRAPHIC: "infographic diagram process",
+            VisualIntent.CHECKLIST: "checklist clipboard planning",
+            VisualIntent.COMPARISON_CARD: "comparison side by side",
+            VisualIntent.EMPHASIS_CAPTION: "bold text highlight concept",
+            VisualIntent.REAL_BROLL: "",  # 키워드만으로 충분
+            VisualIntent.MAP: "aerial map city view",
+            VisualIntent.TALKING_HEAD_STYLE: "expert speaker explaining",
+            VisualIntent.CLOSING_CTA: "subscribe button youtube ending card",
+        }
+        ctx = intent_context.get(intent, "")
 
         if parts:
-            return " ".join(parts[:3])
+            # 키워드 매칭 결과 + intent 컨텍스트 결합
+            if ctx and not any(c in " ".join(parts) for c in ctx.split()[:2]):
+                parts.append(ctx.split()[0])  # 핵심 단어 1개만 추가
+            return " ".join(parts[:4])
 
-        # 폴백: 숫자가 있으면 chart, 아니면 generic
+        # 키워드 매칭 실패 → intent 기반 + 텍스트에서 숫자/핵심어 추출
+        if ctx:
+            # 숫자가 포함된 문맥 추가
+            numbers = re.findall(r'\d+[%만억원]?', text)
+            if numbers:
+                return f"{ctx} {numbers[0]}"
+            return ctx
+
+        # 최종 폴백: 채널 니치 키워드 기반으로 구체화
+        niche = getattr(self, "channel", None)
+        niche_name = getattr(niche, "niche", "") if niche else ""
+        niche_fallback: dict[str, str] = {
+            "real_estate": "apartment building real estate korea",
+            "finance": "financial data investment banking",
+            "health": "health wellness medical concept",
+            "business": "business office meeting professional",
+            "ai": "artificial intelligence technology data",
+        }
+        fallback_query = niche_fallback.get(niche_name, "")
+
         if re.search(r'\d+', text):
-            return "data chart statistics concept"
-        return "professional modern office concept"
+            return f"data statistics number {fallback_query}".strip()[:60]
+        if fallback_query:
+            return fallback_query
+        return "professional data analysis concept"
 
     # ═══════════════════════════════════════════════════
     # 프롬프트 빌더
@@ -636,10 +787,27 @@ JSON으로만 응답하세요:
     # 타이밍 계산
     # ═══════════════════════════════════════════════════
 
+    # ═══ intent별 권장 duration 범위 (초) ═══
+    _INTENT_DURATION_RANGE: dict[VisualIntent, tuple[float, float]] = {
+        VisualIntent.EMPHASIS_CAPTION: (3.0, 8.0),     # 짧고 임팩트 있게
+        VisualIntent.CHART: (6.0, 15.0),               # 수치 읽을 시간 필요
+        VisualIntent.INFOGRAPHIC: (6.0, 15.0),         # 정보 소화 시간
+        VisualIntent.CHECKLIST: (6.0, 15.0),           # 항목 읽기
+        VisualIntent.COMPARISON_CARD: (5.0, 12.0),     # 비교 소화
+        VisualIntent.REAL_BROLL: (4.0, 12.0),          # 분위기 장면
+        VisualIntent.MAP: (4.0, 10.0),                 # 지도 확인
+        VisualIntent.TALKING_HEAD_STYLE: (5.0, 20.0),  # 설명 호흡 길게
+        VisualIntent.CLOSING_CTA: (3.0, 8.0),          # CTA는 간결하게
+    }
+
     def _apply_timing(
         self, scenes: list[Scene], voice: VoiceResult | None, script: ScriptResult,
     ) -> None:
-        """씬별 start_time / end_time / duration 계산."""
+        """씬별 start_time / end_time / duration 계산.
+
+        보장: 모든 씬이 total_dur 안에 들어옴 (S6 의존 없음).
+        방식: 글자수 비례 → intent 클램핑 → 강제 스케일링 → 타임라인 배치.
+        """
         if not scenes:
             return
 
@@ -649,50 +817,116 @@ JSON으로만 응답하세요:
         else:
             total_dur = script.estimated_duration_seconds or 600.0
 
-        # 글자수 비례 분배
+        # ═══ Phase 1: 글자수 비례 + intent 클램핑으로 raw duration 계산 ═══
         char_counts = [max(len(s.narration_text), 10) for s in scenes]
         total_chars = sum(char_counts)
 
-        # voice segments 기반 스냅 시도
-        seg_ends: list[float] = []
-        if voice and voice.segments:
-            seg_ends = sorted(set(
-                seg.end for seg in voice.segments if seg.end > 0
-            ))
-
-        current_time = 0.0
+        raw_durations: list[float] = []
         for i, scene in enumerate(scenes):
             raw_dur = (char_counts[i] / total_chars) * total_dur
-            raw_dur = max(3.0, min(30.0, raw_dur))  # 3~30초 범위
+            intent = getattr(scene, "visual_intent", VisualIntent.REAL_BROLL)
+            min_dur, max_dur = self._INTENT_DURATION_RANGE.get(intent, (4.0, 15.0))
+            raw_dur = max(min_dur, min(max_dur, raw_dur))
+            raw_durations.append(raw_dur)
 
-            # segment boundary에 스냅
-            target_end = current_time + raw_dur
-            if seg_ends:
+        # ═══ Phase 2: 강제 스케일링 — 합산이 total_dur과 정확히 일치하도록 ═══
+        # 핵심: min_dur도 scale과 함께 축소해야 악순환 방지
+        raw_total = sum(raw_durations)
+        if raw_total > 0 and abs(raw_total - total_dur) > 0.1:
+            scale = total_dur / raw_total
+            # 절대 최소값: 씬당 1초 (더 줄이면 화면이 깜빡임)
+            abs_min = max(1.0, total_dur / len(scenes) * 0.3)
+            for i in range(len(raw_durations)):
+                raw_durations[i] = max(abs_min, round(raw_durations[i] * scale, 2))
+
+        # 스케일링 후에도 합산 오차가 있으면 마지막 씬으로 보정
+        scaled_total = sum(raw_durations)
+        diff = round(total_dur - scaled_total, 2)
+        if abs(diff) > 0.01 and raw_durations:
+            raw_durations[-1] = max(1.0, round(raw_durations[-1] + diff, 2))
+
+        # ═══ Phase 3: voice segment boundary에 스냅 (optional, total_dur 깨지지 않게) ═══
+        seg_ends: list[float] = []
+        if voice and voice.segments:
+            seg_ends = sorted(set(seg.end for seg in voice.segments if seg.end > 0))
+
+        if seg_ends:
+            abs_min_snap = max(1.0, total_dur / len(scenes) * 0.3)
+            cursor = 0.0
+            for i in range(len(raw_durations) - 1):
+                target_end = cursor + raw_durations[i]
                 snapped = self._find_nearest_seg_end(target_end, seg_ends)
-                if snapped > current_time + 2.0:  # 최소 2초 보장
-                    target_end = snapped
+                if snapped > cursor + abs_min_snap and snapped < total_dur:
+                    snapped_dur = round(snapped - cursor, 2)
+                    delta = snapped_dur - raw_durations[i]
+                    raw_durations[i] = snapped_dur
+                    raw_durations[i + 1] = max(abs_min_snap, round(raw_durations[i + 1] - delta, 2))
+                cursor += raw_durations[i]
+            remaining = round(total_dur - sum(raw_durations[:-1]), 2)
+            raw_durations[-1] = max(1.0, remaining)
 
+        # ═══ Phase 4: 타임라인 배치 ═══
+        current_time = 0.0
+        for i, scene in enumerate(scenes):
+            scene.duration = raw_durations[i]
             scene.start_time = round(current_time, 2)
-            scene.end_time = round(target_end, 2)
-            scene.duration = round(target_end - current_time, 2)
-            current_time = target_end
+            scene.end_time = round(current_time + scene.duration, 2)
+            current_time = scene.end_time
 
-        # 마지막 씬은 오디오 끝까지 연장
-        if scenes:
-            scenes[-1].end_time = round(total_dur, 2)
-            scenes[-1].duration = round(total_dur - scenes[-1].start_time, 2)
+        # ═══ Phase 5: 불변 조건 보장 — 반복 검증 ═══
+        # 불변: 모든 duration > 0, sum(duration) == total_dur, 타임라인 연속
+        abs_floor = max(0.5, total_dur / len(scenes) * 0.1)
 
-        # 스케일링 보정 (오차 1초 이상이면)
-        actual_total = sum(s.duration for s in scenes)
-        if abs(actual_total - total_dur) > 1.0 and actual_total > 0:
-            scale = total_dur / actual_total
-            current_time = 0.0
+        for _pass in range(3):  # 최대 3회 보정 패스
+            has_problem = False
+
+            # 5a: 음수/0 duration 수정 — 앞뒤 씬에서 시간을 빌려옴
+            for i, scene in enumerate(scenes):
+                if scene.duration <= 0:
+                    has_problem = True
+                    steal = abs_floor - scene.duration
+                    scene.duration = abs_floor
+                    # 가장 긴 인접 씬에서 빌려옴
+                    donor = max(
+                        [j for j in range(len(scenes)) if j != i],
+                        key=lambda j: scenes[j].duration,
+                    )
+                    scenes[donor].duration = max(
+                        abs_floor, round(scenes[donor].duration - steal, 2)
+                    )
+
+            # 5b: 합산 보정 — 비례 축소/확대 (마지막 씬 몰아주기 금지)
+            actual_total = sum(s.duration for s in scenes)
+            if abs(actual_total - total_dur) > 0.05:
+                has_problem = True
+                scale = total_dur / actual_total if actual_total > 0 else 1.0
+                for scene in scenes:
+                    scene.duration = max(abs_floor, round(scene.duration * scale, 2))
+                # 스케일 후 잔여 오차 → 가장 긴 씬에서 보정
+                residual = round(total_dur - sum(s.duration for s in scenes), 2)
+                if abs(residual) > 0.01:
+                    longest = max(range(len(scenes)), key=lambda i: scenes[i].duration)
+                    scenes[longest].duration = round(scenes[longest].duration + residual, 2)
+
+            # 5c: 타임라인 재배치
+            cursor = 0.0
             for scene in scenes:
-                scene.duration = round(scene.duration * scale, 2)
-                scene.duration = max(2.0, scene.duration)
-                scene.start_time = round(current_time, 2)
-                scene.end_time = round(current_time + scene.duration, 2)
-                current_time = scene.end_time
+                scene.start_time = round(cursor, 2)
+                scene.end_time = round(cursor + scene.duration, 2)
+                cursor = scene.end_time
+
+            if not has_problem:
+                break
+
+        # 최종 불변 조건 검증
+        actual_total = sum(s.duration for s in scenes)
+        neg_count = sum(1 for s in scenes if s.duration <= 0)
+        if neg_count > 0:
+            logger.error(f"S4 timing INVARIANT VIOLATED: {neg_count} scenes with duration<=0")
+        logger.info(
+            f"S4 timing: {len(scenes)} scenes, "
+            f"total={actual_total:.1f}s (target={total_dur:.1f}s)"
+        )
 
     @staticmethod
     def _find_nearest_seg_end(target: float, seg_ends: list[float]) -> float:

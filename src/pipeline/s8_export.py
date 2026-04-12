@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.models import (
-    Stage, EditingResult, ThumbnailResult, ExportResult,
+    Stage, EditingResult, ThumbnailResult, ExportResult, VoiceResult,
 )
 from .base_stage import BaseStage
 
@@ -41,20 +41,120 @@ class S8Export(BaseStage):
             final_path.write_bytes(b"\x00" * 1024)
             file_size_mb = 0.001
 
-        # Quality gate
+        # ═══ Quality Gates ═══
         if not self.dry_run:
-            min_duration = 120.0  # minimum 2 minutes for any long-form content
+            from ..core.exceptions import StageError
+
+            # 1. 최소 영상 길이 (롱폼 2분 이상)
+            min_duration = 120.0
             if editing.duration_seconds < min_duration:
-                from ..core.exceptions import StageError
                 raise StageError("export", self.production_id,
                     cause=ValueError(
                         f"QUALITY GATE FAILED: video {editing.duration_seconds:.1f}s < {min_duration:.0f}s minimum"))
 
+            # 2. 파일 크기 최소값
             if file_size_mb < 1.0:
-                from ..core.exceptions import StageError
                 raise StageError("export", self.production_id,
                     cause=ValueError(
                         f"QUALITY GATE FAILED: file {file_size_mb:.2f}MB is suspiciously small"))
+
+            # 3. 썸네일 품질 검증 — 실패/누락은 StageError
+            thumb_path = Path(thumb.thumbnail_path) if thumb.thumbnail_path else None
+            if not thumb_path or not thumb_path.exists():
+                raise StageError("export", self.production_id,
+                    cause=ValueError("QUALITY GATE FAILED: thumbnail file missing"))
+            thumb_size = thumb_path.stat().st_size
+            if thumb_size < 5_000:
+                raise StageError("export", self.production_id,
+                    cause=ValueError(
+                        f"QUALITY GATE FAILED: thumbnail too small ({thumb_size} bytes)"))
+
+            # 4. scene duration outlier — 25초 초과 씬이 있으면 실패
+            report_path = Path(editing.output_path).parent / "scene_relevance_report.json"
+            if report_path.exists():
+                import json
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    scenes_data = report.get("scenes", [])
+                    if scenes_data:
+                        durations = [s["duration"] for s in scenes_data]
+                        avg_dur = sum(durations) / len(durations)
+                        max_dur = max(durations)
+                        if max_dur > 25:
+                            raise StageError("export", self.production_id,
+                                cause=ValueError(
+                                    f"QUALITY GATE FAILED: scene duration outlier "
+                                    f"max={max_dur:.1f}s > 25s (avg={avg_dur:.1f}s)"))
+                        if max_dur > avg_dur * 4:
+                            logger.warning(
+                                f"Scene duration outlier: max={max_dur:.1f}s "
+                                f"vs avg={avg_dur:.1f}s"
+                            )
+                except StageError:
+                    raise
+                except Exception:
+                    pass
+
+            # 5. 챕터 타임스탬프 — 영상 길이 초과 시 실패
+            for ch in thumb.chapter_timestamps:
+                parts = ch.get("time", "0:00").split(":")
+                try:
+                    ch_seconds = int(parts[0]) * 60 + int(parts[1])
+                    if ch_seconds > editing.duration_seconds:
+                        raise StageError("export", self.production_id,
+                            cause=ValueError(
+                                f"QUALITY GATE FAILED: chapter '{ch.get('title')}' "
+                                f"at {ch['time']} exceeds video duration "
+                                f"{editing.duration_seconds:.0f}s"))
+                except StageError:
+                    raise
+                except (ValueError, IndexError):
+                    pass
+
+            # 6. 패턴 인터럽트 — 적용 검증
+            pi_planned = 0
+            pi_applied = 0
+            for eff in editing.applied_effects:
+                if eff.startswith("pattern_interrupts_planned:"):
+                    try:
+                        pi_planned = int(eff.split(":")[1])
+                    except (ValueError, IndexError):
+                        pass
+                elif eff.startswith("pattern_interrupts_applied:"):
+                    try:
+                        pi_applied = int(eff.split(":")[1])
+                    except (ValueError, IndexError):
+                        pass
+
+            if pi_applied == 0:
+                raise StageError("export", self.production_id,
+                    cause=ValueError(
+                        "QUALITY GATE FAILED: no pattern interrupts applied "
+                        f"(planned={pi_planned}, applied=0)"))
+
+            if pi_planned > 0 and pi_applied < pi_planned:
+                raise StageError("export", self.production_id,
+                    cause=ValueError(
+                        f"QUALITY GATE FAILED: PI incomplete — "
+                        f"{pi_applied}/{pi_planned} applied "
+                        f"({pi_planned - pi_applied} failed)"))
+
+            # 7. 자막 줄 길이 검사 (정보 로그)
+            voice_data = self.state.load_stage_output(self.production_id, Stage.VOICE)
+            if voice_data:
+                srt_path = Path(voice_data.get("srt_path", ""))
+                if srt_path.exists():
+                    srt_content = srt_path.read_text(encoding="utf-8")
+                    long_lines = [
+                        line for line in srt_content.split("\n")
+                        if len(line.strip()) > 50
+                        and "-->" not in line
+                        and not line.strip().replace(" ", "").replace("-", "").replace(">", "").replace(",", "").isdigit()
+                    ]
+                    if long_lines:
+                        logger.info(
+                            f"SRT line length check: {len(long_lines)} lines > 50 chars"
+                        )
 
         # YouTube 업로드 시도
         upload_result = await self._try_upload(final_path, thumb)

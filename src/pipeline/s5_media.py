@@ -29,8 +29,11 @@ class S5Media(BaseStage):
         storyboard = StoryboardResult(**sb_data)
 
         settings = load_settings()
-        concurrency = settings.media_generation.concurrency_limit
+        concurrency = min(settings.media_generation.concurrency_limit, 6)
         semaphore = asyncio.Semaphore(concurrency)
+
+        # 프롬프트 캐시: 동일/유사 프롬프트의 중복 API 호출 방지
+        self._prompt_cache: dict[str, Path] = {}  # prompt_hash → file_path
 
         self.stage_dir.mkdir(parents=True, exist_ok=True)
         assets: list[MediaAsset] = []
@@ -204,9 +207,45 @@ class S5Media(BaseStage):
         )
         logger.info(f"실패 리포트 저장: {report_path}")
 
+    # 로컬 Pillow 렌더 대상 intent (API 호출 없이 빠르게 생성)
+    _LOCAL_RENDER_INTENTS = {
+        VisualIntent.CHART,
+        VisualIntent.CHECKLIST,
+        VisualIntent.COMPARISON_CARD,
+        VisualIntent.EMPHASIS_CAPTION,
+        VisualIntent.INFOGRAPHIC,
+        VisualIntent.CLOSING_CTA,
+    }
+
     async def _generate_single(self, scene: Scene) -> MediaAsset:
         """단일 씬 미디어 생성."""
-        scene_num = scene.scene_number
+        settings = load_settings()
+        prefer_local = settings.media_generation.prefer_local_render
+
+        # 로컬 Pillow 렌더 우선: chart/card/checklist 등은 API 호출 없이 빠르게 생성
+        if (prefer_local
+            and scene.media_type == MediaType.AI_IMAGE
+            and scene.visual_intent in self._LOCAL_RENDER_INTENTS
+            and not self.dry_run):
+            try:
+                out_path = self.stage_dir / f"scene_{scene.scene_number:03d}.png"
+                self._generate_fallback_image(scene, out_path)
+                logger.info(
+                    f"Scene {scene.scene_number}: local Pillow render "
+                    f"(intent={scene.visual_intent.value})"
+                )
+                return MediaAsset(
+                    scene_number=scene.scene_number,
+                    media_type=MediaType.AI_IMAGE,
+                    file_path=str(out_path),
+                    original_resolution=[1920, 1080],
+                    provider="local_pillow",
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Scene {scene.scene_number}: local render failed ({e}), "
+                    "falling back to AI"
+                )
 
         if scene.media_type == MediaType.AI_IMAGE:
             return await self._generate_image(scene)
@@ -243,11 +282,26 @@ class S5Media(BaseStage):
         attempts: list[str] = []
         errors: list[tuple[str, Exception]] = []
 
+        # ═══ 프롬프트 캐시 확인 ═══
+        import hashlib
+        prompt_hash = hashlib.md5(gpt_prompt[:200].encode()).hexdigest()[:12]
+        cached_path = self._prompt_cache.get(prompt_hash)
+        if cached_path and cached_path.exists():
+            import shutil
+            shutil.copy2(str(cached_path), str(out_path))
+            logger.info(f"Scene {sn}: prompt cache hit → {cached_path.name}")
+            return MediaAsset(
+                scene_number=sn, media_type=MediaType.AI_IMAGE,
+                file_path=str(out_path), original_resolution=[1920, 1080],
+                provider="cache",
+            )
+
         # ═══ 1단계: OpenAI GPT Image — 최적화 프롬프트 ═══
         result = await self._try_provider(
             "openai", gpt_prompt, out_path, sn, attempts, errors,
         )
         if result:
+            self._prompt_cache[prompt_hash] = out_path
             return result
 
         # ═══ 2단계: OpenAI GPT Image — 간소화 프롬프트 ═══

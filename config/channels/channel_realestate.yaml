@@ -36,8 +36,8 @@ content:
 # AI 프로바이더 선택
 providers:
   llm: "claude"
-  tts: "elevenlabs"
-  voice_id: "${ELEVENLABS_VOICE_ID_REALESTATE}"  # 추천: Bryan
+  tts: "typecast"
+  voice_id: "${TYPECAST_VOICE_ID}"
   image_gen: "openai"
   video_gen: "grok"           # kling 옵션: 시네마틱 항공샷 등
 

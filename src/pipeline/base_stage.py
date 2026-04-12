@@ -46,8 +46,14 @@ class BaseStage(ABC):
         self.stage_dir = self.prod_dir / self.stage.value
 
     async def execute(self, **kwargs: Any) -> BaseModel:
-        """스테이지 실행 (공통 흐름)."""
+        """스테이지 실행 (공통 흐름) — timing 기록 포함."""
+        import time
+        from datetime import datetime, timezone
+
         stage_name = self.stage.value
+        started_at = datetime.now(timezone.utc).isoformat()
+        t0 = time.monotonic()
+
         logger.info(f"[{stage_name}] START (production={self.production_id}, dry_run={self.dry_run})")
 
         # 상태 기록: running
@@ -56,18 +62,52 @@ class BaseStage(ABC):
         try:
             result = await self.run(**kwargs)
 
+            elapsed = round(time.monotonic() - t0, 2)
+            completed_at = datetime.now(timezone.utc).isoformat()
+
             # 결과 저장
             self.state.save_stage_output(
                 self.production_id, self.stage, result.model_dump()
             )
-            logger.info(f"[{stage_name}] DONE")
+
+            # timing 기록 (DB에 stage_timings 테이블)
+            self._record_stage_timing(
+                stage_name, started_at, completed_at, elapsed,
+            )
+
+            logger.info(f"[{stage_name}] DONE ({elapsed:.1f}s)")
             return result
 
         except Exception as e:
+            elapsed = round(time.monotonic() - t0, 2)
+            completed_at = datetime.now(timezone.utc).isoformat()
             error_msg = f"[{stage_name}] {type(e).__name__}: {e}"
-            logger.error(error_msg)
+            logger.error(f"{error_msg} ({elapsed:.1f}s)")
+
+            self._record_stage_timing(
+                stage_name, started_at, completed_at, elapsed, error=str(e)[:500],
+            )
+
             self.state.mark_failed(self.production_id, error_msg)
             raise StageError(stage_name, self.production_id, cause=e) from e
+
+    def _record_stage_timing(
+        self,
+        stage_name: str,
+        started_at: str,
+        completed_at: str,
+        duration_seconds: float,
+        error: str = "",
+    ) -> None:
+        """stage timing을 DB에 기록."""
+        try:
+            self.state.record_stage_timing(
+                self.production_id, stage_name,
+                started_at, completed_at, duration_seconds, error,
+            )
+        except Exception as e:
+            # timing 기록 실패는 치명적이 아니므로 경고만
+            logger.warning(f"Failed to record stage timing: {e}")
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> BaseModel:

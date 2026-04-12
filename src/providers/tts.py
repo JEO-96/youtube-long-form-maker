@@ -176,16 +176,15 @@ class ElevenLabsTTS(TTSProvider):
 
 # ═══ TypeCast TTS ═══
 
-TYPECAST_API_BASE = "https://typecast.ai/api/speak"
+TYPECAST_API_BASE = "https://api.typecast.ai"
 
 
 class TypeCastTTS(TTSProvider):
-    """TypeCast ssfm-v30 TTS 프로바이더 - 한국어 특화 20+ 음성.
+    """TypeCast v1 TTS 프로바이더 - 한국어 특화 20+ 음성.
 
-    특징:
-        - 한국어 자연스러움 최적화
-        - 20개 이상의 한국어 음성 지원
-        - 감정 파라미터 (happy, sad, angry 등)
+    API: POST https://api.typecast.ai/v1/text-to-speech
+    인증: X-API-KEY 헤더
+    응답: 오디오 바이너리 (WAV/MP3)
     """
 
     def __init__(self) -> None:
@@ -209,7 +208,14 @@ class TypeCastTTS(TTSProvider):
         output_path: Path | None = None,
         **kwargs: Any,
     ) -> Path:
-        """TypeCast API로 텍스트→음성 합성."""
+        """TypeCast v1 API로 텍스트→음성 합성.
+
+        API 스펙:
+        - POST /v1/text-to-speech
+        - 인증: X-API-KEY 헤더
+        - 텍스트 한도: 1~2000자
+        - 응답: 오디오 바이너리
+        """
         voice_id = voice_id or self.default_voice_id
         if not voice_id:
             raise ProviderError("typecast", "No voice_id provided", retryable=False)
@@ -221,24 +227,34 @@ class TypeCastTTS(TTSProvider):
             raise ProviderError("typecast", "Authentication failed: no API key configured", retryable=False)
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-API-KEY": self.api_key,
             "Content-Type": "application/json",
         }
+
+        # 텍스트 2000자 제한 — 초과 시 분할 합성
+        if len(text) > 2000:
+            return await self._synthesize_chunked(text, voice_id, output_path, headers, **kwargs)
+
         payload: dict[str, Any] = {
             "text": text,
-            "model_id": self.model,
-            "actor_id": voice_id,
-            "emotion": kwargs.get("emotion", self.default_emotion),
-            "speed": kwargs.get("speed", self.speed),
-            "pitch": kwargs.get("pitch", self.pitch),
-            "format": "wav",
+            "voice_id": voice_id,
+            "model": self.model,
+            "output": {
+                "format": "wav",
+                "tempo": kwargs.get("speed", self.speed),
+                "pitch": kwargs.get("pitch", self.pitch),
+            },
         }
 
+        # 감정 설정
+        emotion = kwargs.get("emotion", self.default_emotion)
+        if emotion and emotion != "neutral":
+            payload["prompt"] = {"emotion": emotion}
+
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # Step 1: 합성 요청
             try:
                 resp = await client.post(
-                    f"{TYPECAST_API_BASE}/generate",
+                    f"{TYPECAST_API_BASE}/v1/text-to-speech",
                     headers=headers,
                     json=payload,
                 )
@@ -248,33 +264,77 @@ class TypeCastTTS(TTSProvider):
                 raise ProviderError("typecast", f"Connection failed: {e}", retryable=True) from e
 
             self._handle_error(resp)
-            result = resp.json()
 
-            # Step 2: 비동기 결과 다운로드
-            audio_url = result.get("audio_url") or result.get("result", {}).get("url")
-            speak_id = result.get("speak_id")
+            # 응답이 JSON이면 비동기 폴링, 바이너리면 직접 저장
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" in content_type:
+                result = resp.json()
+                audio_url = result.get("audio_url") or result.get("result", {}).get("url")
+                speak_id = result.get("speak_id")
 
-            if not audio_url and speak_id:
-                audio_url = await self._poll_result(client, headers, speak_id)
+                if not audio_url and speak_id:
+                    audio_url = await self._poll_result(client, headers, speak_id)
 
-            if not audio_url:
-                raise ProviderError("typecast", "No audio URL in response", retryable=True)
+                if not audio_url:
+                    raise ProviderError("typecast", f"No audio URL in response: {result}", retryable=True)
 
-            # Step 3: 오디오 다운로드
-            try:
-                audio_resp = await client.get(audio_url, timeout=60.0)
-            except httpx.TimeoutException as e:
-                raise ProviderTimeoutError("typecast", timeout_seconds=60) from e
+                try:
+                    audio_resp = await client.get(audio_url, timeout=60.0)
+                except httpx.TimeoutException as e:
+                    raise ProviderTimeoutError("typecast", timeout_seconds=60) from e
 
-            if audio_resp.status_code != 200:
-                raise ProviderError(
-                    "typecast",
-                    f"Audio download failed: {audio_resp.status_code}",
-                    retryable=True,
-                )
+                if audio_resp.status_code != 200:
+                    raise ProviderError("typecast", f"Audio download failed: {audio_resp.status_code}", retryable=True)
 
-        output_path.write_bytes(audio_resp.content)
-        logger.info(f"TypeCast TTS: {len(text)} chars → {output_path} ({len(audio_resp.content)} bytes)")
+                output_path.write_bytes(audio_resp.content)
+            else:
+                # 바이너리 오디오 직접 반환
+                output_path.write_bytes(resp.content)
+
+        logger.info(f"TypeCast TTS: {len(text)} chars → {output_path}")
+        return output_path
+
+    async def _synthesize_chunked(
+        self,
+        text: str,
+        voice_id: str,
+        output_path: Path,
+        headers: dict,
+        **kwargs: Any,
+    ) -> Path:
+        """2000자 초과 텍스트를 분할 합성 후 이어붙이기."""
+        import re
+
+        # 문장 경계에서 분할
+        chunks: list[str] = []
+        current = ""
+        sentences = re.split(r'(?<=[.!?다요죠까니])\s+', text)
+        for sent in sentences:
+            if len(current) + len(sent) > 1800 and current:
+                chunks.append(current.strip())
+                current = sent
+            else:
+                current = f"{current} {sent}" if current else sent
+        if current.strip():
+            chunks.append(current.strip())
+
+        # 각 chunk 합성
+        chunk_paths: list[Path] = []
+        for i, chunk in enumerate(chunks):
+            chunk_path = output_path.with_name(f"{output_path.stem}_chunk{i:03d}.wav")
+            # 재귀 호출 (2000자 이하이므로 chunked 분기 안 탐)
+            await self.synthesize(chunk, voice_id=voice_id, output_path=chunk_path, **kwargs)
+            chunk_paths.append(chunk_path)
+
+        # pydub로 이어붙이기
+        from pydub import AudioSegment
+        combined = AudioSegment.empty()
+        for cp in chunk_paths:
+            combined += AudioSegment.from_file(str(cp))
+            cp.unlink(missing_ok=True)
+
+        combined.export(str(output_path), format="wav")
+        logger.info(f"TypeCast TTS chunked: {len(text)} chars, {len(chunks)} chunks → {output_path}")
         return output_path
 
     async def _poll_result(
@@ -287,7 +347,7 @@ class TypeCastTTS(TTSProvider):
             await asyncio.sleep(2)
             try:
                 poll_resp = await client.get(
-                    f"{TYPECAST_API_BASE}/status/{speak_id}",
+                    f"{TYPECAST_API_BASE}/v1/text-to-speech/{speak_id}",
                     headers=headers,
                 )
             except httpx.TimeoutException:
@@ -328,7 +388,7 @@ class TypeCastTTS(TTSProvider):
         if resp.status_code == 429:
             retry_after = float(resp.headers.get("retry-after", "60"))
             raise RateLimitError("typecast", retry_after_seconds=retry_after)
-        if resp.status_code == 402 or resp.status_code == 403:
+        if resp.status_code in (402, 403):
             raise QuotaExhaustedError("typecast")
         if resp.status_code == 422:
             raise ProviderError("typecast", f"Invalid request: {resp.text}", retryable=False)

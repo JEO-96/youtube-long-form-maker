@@ -19,7 +19,11 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    """YAML 파일을 로드하고 환경 변수를 치환."""
+    """YAML 파일을 로드하고 환경 변수를 치환 (.env 포함)."""
+    # .env 파일을 os.environ에 로드 (아직 안 됐으면)
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
     with open(path, encoding="utf-8") as f:
         content = f.read()
     # ${VAR} 패턴을 환경 변수로 치환
@@ -48,8 +52,9 @@ class VideoConfig(BaseModel):
 # ═══ 미디어 생성 설정 ═══
 
 class MediaGenerationConfig(BaseModel):
-    concurrency_limit: int = 3
+    concurrency_limit: int = 3       # 기본 3, 최��� 6까지 설정 가능
     stock_mix_ratio: float = 0.2
+    prefer_local_render: bool = True  # chart/card/checklist 등 Pillow 로컬 렌더 우선
 
 
 # ═══ Retention 설정 ═══
