@@ -108,12 +108,33 @@ class S6Editing(BaseStage):
         # Optional Enhancers
         final_path = await self._apply_enhancers(output_path, applied_effects)
 
-        # alignment drift 메타
-        max_drift = max((abs(d['drift']) for d in self._last_alignment_info), default=0.0)
-        align_warnings = [
-            f"Scene {d['scene']}: drift {d['drift']:.1f}s (conf={d['confidence']})"
-            for d in self._last_alignment_info if abs(d['drift']) > 3.0
-        ]
+        # alignment 검증 — pre-cap drift 기준 (cap은 duration만 조정하므로 pre-cap이 정확)
+        max_drift = 0.0
+        align_warnings: list[str] = []
+        if self._last_alignment_info:
+            for info in self._last_alignment_info:
+                if info['confidence'] >= 0.3:
+                    drift = abs(info['drift'])
+                    max_drift = max(max_drift, drift)
+                    if drift > 3.0:
+                        align_warnings.append(
+                            f"Scene {info['scene']}: drift {info['drift']:.1f}s"
+                        )
+
+            # alignment hard gate
+            match_count = sum(1 for d in self._last_alignment_info if d['confidence'] >= 0.3)
+            total_scenes = len(self._last_alignment_info)
+            match_rate = match_count / total_scenes if total_scenes else 0
+            if not self.dry_run:
+                if max_drift > 10.0:
+                    raise StageError("editing", self.production_id,
+                        cause=ValueError(
+                            f"Alignment drift too large: max {max_drift:.1f}s > 10s"))
+                if match_rate < 0.5 and total_scenes > 5:
+                    raise StageError("editing", self.production_id,
+                        cause=ValueError(
+                            f"Alignment match rate too low: {match_count}/{total_scenes} "
+                            f"({match_rate:.0%} < 50%)"))
 
         return EditingResult(
             output_path=str(final_path),

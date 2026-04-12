@@ -744,33 +744,40 @@ class S5Media(BaseStage):
             logger.debug(f"Visual QA failed: {e}")
 
     @staticmethod
+    @staticmethod
     def _is_mostly_black(video_path: Path, threshold: float = 0.2) -> bool:
         """비디오에서 검은 구간 비율을 검사. threshold 이상이면 True.
 
-        ffmpeg blackdetect로 검은 구간 감지 후 전체 대비 비율 계산.
+        duration 조회: ffmpeg -i stderr의 Duration 라인 파싱 (ffprobe 비의존).
+        black 감지: ffmpeg blackdetect 필터.
+        파싱 실패 시 True 반환 (reject 쪽으로 안전하게 처리).
         """
         import subprocess, re
 
+        # ── duration 조회: ffmpeg stderr에서 Duration 파싱 ──
+        total_dur = 0.0
         try:
             result = subprocess.run(
-                [
-                    "ffprobe", "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    str(video_path),
-                ],
+                ["ffmpeg", "-hide_banner", "-i", str(video_path)],
                 capture_output=True, text=True, timeout=10,
             )
-            total_dur = float(result.stdout.strip()) if result.stdout.strip() else 0
-            if total_dur <= 0:
-                return False
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+            if match:
+                h, m, s = float(match.group(1)), float(match.group(2)), float(match.group(3))
+                total_dur = h * 3600 + m * 60 + s
+        except Exception:
+            pass
 
+        if total_dur <= 0:
+            logger.warning(f"Black detect: duration parse failed for {video_path.name} → rejecting")
+            return True  # 파싱 실패 시 reject (안전)
+
+        # ── blackdetect ──
+        try:
             result = subprocess.run(
-                [
-                    "ffmpeg", "-i", str(video_path),
-                    "-vf", "blackdetect=d=0.5:pix_th=0.10",
-                    "-an", "-f", "null", "-",
-                ],
+                ["ffmpeg", "-i", str(video_path),
+                 "-vf", "blackdetect=d=0.5:pix_th=0.10",
+                 "-an", "-f", "null", "-"],
                 capture_output=True, text=True, timeout=30,
             )
             black_total = 0.0
@@ -785,8 +792,8 @@ class S5Media(BaseStage):
                 )
             return ratio > threshold
         except Exception as e:
-            logger.debug(f"Black detect failed for {video_path}: {e}")
-            return False
+            logger.warning(f"Black detect failed for {video_path.name}: {e} → rejecting")
+            return True  # 실패 시 reject
 
     def _create_placeholder_image(
         self, path: Path, scene: Scene, label: str = ""
