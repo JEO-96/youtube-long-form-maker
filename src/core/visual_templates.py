@@ -299,41 +299,54 @@ def draw_chart_kpi_bar(
                        keywords[1] if len(keywords) > 1 else "비교 수치",
                        numbers[1], accent, (40, 50, 70))
 
-    # 막대 차트 (좌측~중앙)
+    # 막대 차트 — 밝은 막대 + 키워드 라벨
     n_bars = min(len(years) if years else 5, 7)
     if n_bars < 3:
         n_bars = 5
-    bar_w = min(120, (W - 500) // (n_bars + 1))
-    gap = bar_w // 3
-    chart_left = 80
+    bar_w = min(130, (W - 500) // (n_bars + 1))
+    gap = bar_w // 2
+    chart_left = 100
     bar_y_base = 680
     chart_w = n_bars * (bar_w + gap)
-    start_x = chart_left + (W - 400 - chart_left - chart_w) // 2
+    start_x = chart_left + (W - 420 - chart_left - chart_w) // 2
 
-    # 기준선
-    for gy in [400, 540, 680]:
-        draw.line([(chart_left, gy), (W - 400, gy)], fill=(60, 70, 85), width=1)
+    # Y축 기준선 + 라벨
+    grid_font = get_korean_font(size=14)
+    for i, gy in enumerate([380, 530, 680]):
+        draw.line([(chart_left - 10, gy), (W - 420, gy)], fill=(70, 80, 100), width=1)
+        label = ["높음", "중간", ""][i]
+        if label:
+            draw.text((chart_left - 10, gy - 18), label, fill=(110, 115, 130), font=grid_font)
 
     import random
     rng = random.Random(hash(narration) % 10000)
-    heights = [rng.randint(80, 280) for _ in range(n_bars)]
-    # 하나를 accent 색으로 강조
+    heights = [rng.randint(100, 280) for _ in range(n_bars)]
     highlight_idx = heights.index(max(heights))
 
-    labels = years[:n_bars] if years else [f"항목{i+1}" for i in range(n_bars)]
+    # 라벨: 연도 > 키워드에서 추출 > 숫자 인덱스
+    labels = years[:n_bars] if years else keywords[:n_bars]
     while len(labels) < n_bars:
-        labels.append("")
+        labels.append(f"{len(labels)+1}")
 
-    label_font = get_korean_font(size=16)
     for i in range(n_bars):
         x = start_x + i * (bar_w + gap)
         bh = heights[i]
-        color = accent if i == highlight_idx else (50, 60, 80)
-        draw.rectangle([(x, bar_y_base - bh), (x + bar_w, bar_y_base)], fill=color)
-        # 라벨
-        if labels[i]:
-            draw_text_box(draw, labels[i], (x, bar_y_base + 5, x + bar_w, bar_y_base + 30),
-                           max_font_size=15, fill=(160, 160, 170), align="center", max_lines=1)
+        is_highlight = (i == highlight_idx)
+        # 밝은 색 막대: 강조는 accent, 나머지는 밝은 회색-청색
+        bar_color = accent if is_highlight else (80, 95, 130)
+        draw.rounded_rectangle(
+            [(x, bar_y_base - bh), (x + bar_w, bar_y_base)],
+            radius=4, fill=bar_color,
+        )
+        # 막대 위에 값 표시 (강조 막대만)
+        if is_highlight and numbers:
+            draw_text_box(draw, numbers[0],
+                           (x, bar_y_base - bh - 35, x + bar_w, bar_y_base - bh - 5),
+                           max_font_size=20, fill="white", align="center", max_lines=1)
+        # X축 라벨
+        draw_text_box(draw, str(labels[i]),
+                       (x - 5, bar_y_base + 8, x + bar_w + 5, bar_y_base + 35),
+                       max_font_size=16, fill=(170, 175, 190), align="center", max_lines=1)
 
     # 나레이션 요약
     draw_text_box(draw, narration, (80, 720, W - 80, SAFE_BOTTOM - 30),
@@ -354,62 +367,59 @@ def draw_chart_line(
     numbers = _extract_numbers(narration)
     years = _extract_years(narration)
 
-    # KPI (우측 상단)
     if numbers:
         _draw_kpi_card(draw, W - 380, 110, 320, 90,
                        keywords[0] if keywords else "주요 지표", numbers[0],
                        accent, (40, 50, 70))
 
-    # 라인 차트 영역
-    chart_left, chart_right = 120, W - 120
-    chart_top, chart_bottom = 250, 650
+    # 차트 영역
+    chart_left, chart_right = 140, W - 140
+    chart_top, chart_bottom = 240, 640
     chart_w = chart_right - chart_left
     chart_h = chart_bottom - chart_top
 
-    # 기준선
+    # 기준선 (더 선명하게)
+    grid_font = get_korean_font(size=13)
     for i in range(4):
         gy = chart_top + i * (chart_h // 3)
-        draw.line([(chart_left, gy), (chart_right, gy)], fill=(50, 60, 75), width=1)
+        draw.line([(chart_left, gy), (chart_right, gy)], fill=(65, 75, 95), width=1)
 
-    # 라인 데이터 생성
+    # 데이터 포인트
     import random
     rng = random.Random(hash(narration) % 10000)
-    n_points = max(len(years), 8)
+    n_points = max(len(years), 7)
     points = []
-    y_val = rng.randint(chart_h // 3, chart_h * 2 // 3)
+    y_val = rng.randint(chart_h // 4, chart_h * 3 // 4)
     for i in range(n_points):
-        x = chart_left + int(i * chart_w / (n_points - 1))
-        y_val = max(20, min(chart_h - 20, y_val + rng.randint(-60, 60)))
+        x = chart_left + int(i * chart_w / max(n_points - 1, 1))
+        y_val = max(30, min(chart_h - 30, y_val + rng.randint(-50, 50)))
         points.append((x, chart_top + chart_h - y_val))
 
-    # 그라데이션 영역 채우기
-    for i in range(len(points) - 1):
-        x1, y1 = points[i]
-        x2, y2 = points[i + 1]
-        for step in range(x2 - x1):
-            px = x1 + step
-            t = step / max(x2 - x1, 1)
-            py = int(y1 + (y2 - y1) * t)
-            for fy in range(py, chart_bottom):
-                alpha = max(0, 40 - (fy - py) // 4)
-                if alpha > 0:
-                    draw.point((px, fy), fill=(*accent, alpha))
+    # 영역 채우기: polygon으로 깔끔하게 (반투명 대신 어두운 accent)
+    area_color = (accent[0] // 4, accent[1] // 4, accent[2] // 4)
+    area_points = list(points) + [(points[-1][0], chart_bottom), (points[0][0], chart_bottom)]
+    draw.polygon(area_points, fill=area_color)
 
-    # 라인
+    # 라인 (두꺼운 흰색 라인으로 잘 보이게)
     for i in range(len(points) - 1):
-        draw.line([points[i], points[i + 1]], fill=accent, width=3)
+        draw.line([points[i], points[i + 1]], fill="white", width=3)
+    # 데이터 포인트
     for p in points:
-        draw.ellipse((p[0] - 4, p[1] - 4, p[0] + 4, p[1] + 4), fill="white", outline=accent, width=2)
+        draw.ellipse((p[0] - 5, p[1] - 5, p[0] + 5, p[1] + 5), fill=accent, outline="white", width=2)
 
     # X축 라벨
-    x_labels = years if years else [str(2020 + i) for i in range(n_points)]
-    for i, label in enumerate(x_labels[:n_points]):
-        x = chart_left + int(i * chart_w / (n_points - 1))
-        draw_text_box(draw, label, (x - 30, chart_bottom + 10, x + 30, chart_bottom + 35),
-                       max_font_size=14, fill=(150, 150, 160), align="center", max_lines=1)
+    x_labels = years[:n_points] if years else [str(2020 + i) for i in range(n_points)]
+    while len(x_labels) < n_points:
+        x_labels.append("")
+    for i in range(n_points):
+        x = chart_left + int(i * chart_w / max(n_points - 1, 1))
+        if x_labels[i]:
+            draw_text_box(draw, x_labels[i],
+                           (x - 30, chart_bottom + 10, x + 30, chart_bottom + 32),
+                           max_font_size=15, fill=(160, 165, 180), align="center", max_lines=1)
 
     # 나레이션
-    draw_text_box(draw, narration, (80, 700, W - 80, SAFE_BOTTOM - 30),
+    draw_text_box(draw, narration, (80, 690, W - 80, SAFE_BOTTOM - 30),
                    max_font_size=22, min_font_size=16, fill=(190, 190, 200), max_lines=3)
     _draw_footer(draw, W)
 
@@ -426,28 +436,31 @@ def draw_chart_gauge(
 
     numbers = _extract_numbers(narration)
 
-    # 게이지 중앙
-    cx, cy = W // 2, 420
-    radius = 200
+    cx, cy = W // 2, 430
+    outer_r = 220
+    inner_r = 160
 
-    # 반원 게이지 배경
-    for angle_deg in range(-180, 1):
-        rad = math.radians(angle_deg)
-        for r in range(radius - 30, radius):
-            x = cx + int(r * math.cos(rad))
-            y = cy + int(r * math.sin(rad))
-            # 색상: 녹색→노란→빨간
-            t = (angle_deg + 180) / 180
-            if t < 0.4:
-                color = (60, 180, 80)
-            elif t < 0.7:
-                color = (220, 180, 40)
-            else:
-                color = accent
-            draw.point((x, y), fill=color)
+    # 반원 게이지 — arc 방식으로 깔끔하게
+    # 3구간 색상: 녹색(안전) → 노란(주의) → 빨간(위험)
+    gauge_colors = [
+        (-180, -108, (50, 200, 80)),   # 안전 (0~40%)
+        (-108, -54,  (230, 190, 40)),  # 주의 (40~70%)
+        (-54, 0,     accent),          # 위험 (70~100%)
+    ]
+    for start_a, end_a, color in gauge_colors:
+        draw.arc(
+            [(cx - outer_r, cy - outer_r), (cx + outer_r, cy + outer_r)],
+            start=start_a, end=end_a, fill=color, width=outer_r - inner_r,
+        )
 
-    # 게이지 값 (narration에서 퍼센트 추출)
-    gauge_val = 0.6  # 기본
+    # 내부 원 (배경색으로 가운데 비움)
+    draw.ellipse(
+        (cx - inner_r + 5, cy - inner_r + 5, cx + inner_r - 5, cy + inner_r - 5),
+        fill=(35, 45, 65),
+    )
+
+    # 게이지 값
+    gauge_val = 0.6
     for num in numbers:
         clean = re.sub(r'[^\d.]', '', num)
         if clean:
@@ -458,15 +471,16 @@ def draw_chart_gauge(
 
     # 바늘
     needle_angle = math.radians(-180 + gauge_val * 180)
-    nx = cx + int((radius - 50) * math.cos(needle_angle))
-    ny = cy + int((radius - 50) * math.sin(needle_angle))
+    needle_len = inner_r - 20
+    nx = cx + int(needle_len * math.cos(needle_angle))
+    ny = cy + int(needle_len * math.sin(needle_angle))
     draw.line([(cx, cy), (nx, ny)], fill="white", width=4)
-    draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill="white")
+    draw.ellipse((cx - 12, cy - 12, cx + 12, cy + 12), fill="white")
 
     # 게이지 라벨
-    draw_text_box(draw, "안전", (cx - radius - 40, cy + 20, cx - radius + 60, cy + 50),
+    draw_text_box(draw, "안전", (cx - outer_r - 40, cy + 20, cx - outer_r + 60, cy + 50),
                    max_font_size=16, fill=(60, 180, 80), align="center", max_lines=1)
-    draw_text_box(draw, "위험", (cx + radius - 60, cy + 20, cx + radius + 40, cy + 50),
+    draw_text_box(draw, "위험", (cx + outer_r - 60, cy + 20, cx + outer_r + 40, cy + 50),
                    max_font_size=16, fill=accent, align="center", max_lines=1)
 
     # 핵심 수치
