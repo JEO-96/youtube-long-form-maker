@@ -305,18 +305,31 @@ def draw_chart_kpi_bar(
         n_bars = 5
     bar_w = min(130, (W - 500) // (n_bars + 1))
     gap = bar_w // 2
-    chart_left = 100
+    chart_left = 140
     bar_y_base = 680
     chart_w = n_bars * (bar_w + gap)
     start_x = chart_left + (W - 420 - chart_left - chart_w) // 2
 
+    # Y축 단위 추출
+    y_unit = ""
+    for pattern, unit in [
+        (r'\d+\s*만\s*호', "만 호"), (r'\d+\s*만\s*건', "만 건"),
+        (r'\d+\s*%', "%"), (r'\d+\s*배', "배"), (r'\d+\s*억', "억"),
+    ]:
+        if re.search(pattern, narration):
+            y_unit = unit
+            break
+
     # Y축 기준선 + 라벨
-    grid_font = get_korean_font(size=14)
     for i, gy in enumerate([380, 530, 680]):
         draw.line([(chart_left - 10, gy), (W - 420, gy)], fill=(70, 80, 100), width=1)
         label = ["높음", "중간", ""][i]
         if label:
-            draw.text((chart_left - 10, gy - 18), label, fill=(110, 115, 130), font=grid_font)
+            draw_text_box(draw, label, (40, gy - 12, chart_left - 15, gy + 12),
+                           max_font_size=14, fill=(120, 125, 140), align="right", max_lines=1)
+    if y_unit:
+        draw_text_box(draw, f"({y_unit})", (40, 350, chart_left - 15, 375),
+                       max_font_size=14, fill=(150, 155, 170), align="right", max_lines=1)
 
     import random
     rng = random.Random(hash(narration) % 10000)
@@ -372,17 +385,41 @@ def draw_chart_line(
                        keywords[0] if keywords else "주요 지표", numbers[0],
                        accent, (40, 50, 70))
 
-    # 차트 영역
-    chart_left, chart_right = 140, W - 140
+    # Y축 단위 추출: narration에서 "만 호", "건", "%", "만 원" 등
+    y_unit = ""
+    for pattern, unit in [
+        (r'\d+\s*만\s*호', "만 호"), (r'\d+\s*만\s*건', "만 건"),
+        (r'\d+\s*만\s*원', "만 원"), (r'\d+\s*억', "억 원"),
+        (r'\d+\s*%', "%"), (r'\d+\s*배', "배"),
+        (r'\d+\s*건', "건"), (r'\d+\s*호', "호"),
+        (r'거래량', "거래량"), (r'물량', "물량"),
+    ]:
+        if re.search(pattern, narration):
+            y_unit = unit
+            break
+    if not y_unit and keywords:
+        y_unit = keywords[0]
+
+    # 차트 영역 (Y축 라벨 공간 확보)
+    chart_left, chart_right = 180, W - 140
     chart_top, chart_bottom = 240, 640
     chart_w = chart_right - chart_left
     chart_h = chart_bottom - chart_top
 
-    # 기준선 (더 선명하게)
-    grid_font = get_korean_font(size=13)
-    for i in range(4):
-        gy = chart_top + i * (chart_h // 3)
+    # Y축 기준선 + 수치 라벨
+    y_labels = ["높음", "", "중간", "", "낮음"]
+    for i in range(5):
+        gy = chart_top + i * (chart_h // 4)
         draw.line([(chart_left, gy), (chart_right, gy)], fill=(65, 75, 95), width=1)
+        if y_labels[i]:
+            draw_text_box(draw, y_labels[i],
+                           (40, gy - 10, chart_left - 10, gy + 10),
+                           max_font_size=14, fill=(130, 135, 150), align="right", max_lines=1)
+
+    # Y축 단위 라벨 (세로)
+    if y_unit:
+        draw_text_box(draw, f"({y_unit})", (40, chart_top - 30, chart_left - 10, chart_top - 5),
+                       max_font_size=14, fill=(150, 155, 170), align="right", max_lines=1)
 
     # 데이터 포인트
     import random
@@ -582,8 +619,8 @@ def draw_checklist_card(
     title = derive_scene_title(narration, vis_desc, "checklist")
     _draw_header_bar(draw, W, title, accent, height=70, chip="CHECK")
 
-    # 항목 추출: 문장 분리 + 최소 3개 보장
-    items = re.split(r'[.!?다요]\s*', narration)
+    # 항목 추출: 문장 경계 분리 (어미+구두점 뒤 공백 기준, 어미 자체는 보존)
+    items = re.split(r'(?<=[.!?다요죠니까])\s+', narration)
     items = [it.strip() for it in items if it.strip() and len(it.strip()) > 5]
 
     # 항목이 부족하면 narration에서 추가 생성
