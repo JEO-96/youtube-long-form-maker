@@ -156,6 +156,10 @@ class S8Export(BaseStage):
                             f"SRT line length check: {len(long_lines)} lines > 50 chars"
                         )
 
+        # 8. Final video blackdetect — 1초+ 검은 구간 금지
+        if not self.dry_run and final_path.exists():
+            self._check_black_frames(final_path)
+
         # YouTube 업로드 시도
         upload_result = await self._try_upload(final_path, thumb)
 
@@ -168,6 +172,40 @@ class S8Export(BaseStage):
             upload_status=upload_result.get("status", "skipped"),
             final_file_size_mb=round(file_size_mb, 2),
         )
+
+    def _check_black_frames(self, video_path: Path) -> None:
+        """최종 영상에서 1초+ 검은 구간 감지 시 StageError."""
+        import subprocess, re
+
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-i", str(video_path),
+                 "-vf", "blackdetect=d=1.0:pix_th=0.10",
+                 "-an", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=180,
+            )
+            black_segments = []
+            for match in re.finditer(
+                r"black_start:(\d+\.?\d*)\s+black_end:(\d+\.?\d*)\s+black_duration:(\d+\.?\d*)",
+                result.stderr,
+            ):
+                start, end, dur = float(match.group(1)), float(match.group(2)), float(match.group(3))
+                if dur >= 1.0:
+                    black_segments.append((start, end, dur))
+
+            if black_segments:
+                details = "; ".join(
+                    f"{s:.1f}-{e:.1f}s ({d:.1f}s)" for s, e, d in black_segments[:5]
+                )
+                from ..core.exceptions import StageError
+                raise StageError("export", self.production_id,
+                    cause=ValueError(
+                        f"QUALITY GATE FAILED: {len(black_segments)} black segment(s) >1.0s: "
+                        f"{details}"))
+        except StageError:
+            raise
+        except Exception as e:
+            logger.warning(f"Black frame detection failed (non-fatal): {e}")
 
     async def _try_upload(self, video_path: Path, thumb: ThumbnailResult) -> dict:
         """YouTube 업로드 시도. 실패해도 로컬 결과물 보존."""

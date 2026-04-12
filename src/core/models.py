@@ -219,6 +219,9 @@ class EditingResult(BaseModel):
     pattern_interrupts_count: int = 0
     subtitle_count: int = 0
     quality_gate_passed: bool = False
+    # 씬-나레이션 싱크 정렬 메타
+    alignment_max_drift: float = 0.0          # 최대 드리프트 (초)
+    alignment_warnings: list[str] = []        # drift > 3s인 씬 목록
 
 
 # ═══ S7: Thumbnail Result ═══

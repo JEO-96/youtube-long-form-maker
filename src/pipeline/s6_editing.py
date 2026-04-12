@@ -108,6 +108,13 @@ class S6Editing(BaseStage):
         # Optional Enhancers
         final_path = await self._apply_enhancers(output_path, applied_effects)
 
+        # alignment drift 메타
+        max_drift = max((abs(d['drift']) for d in self._last_alignment_info), default=0.0)
+        align_warnings = [
+            f"Scene {d['scene']}: drift {d['drift']:.1f}s (conf={d['confidence']})"
+            for d in self._last_alignment_info if abs(d['drift']) > 3.0
+        ]
+
         return EditingResult(
             output_path=str(final_path),
             duration_seconds=duration,
@@ -117,6 +124,8 @@ class S6Editing(BaseStage):
             pattern_interrupts_count=self._last_pi_success_count,
             subtitle_count=subtitle_count,
             quality_gate_passed=True,
+            alignment_max_drift=round(max_drift, 1),
+            alignment_warnings=align_warnings,
         )
 
     # ═══════════════════════════════════════════════════
@@ -390,6 +399,10 @@ class S6Editing(BaseStage):
                 raise StageError("editing", self.production_id,
                     cause=ValueError(
                         f"Video {duration:.1f}s < 80% of audio {target_duration:.1f}s"))
+
+        # ═══ Blackdetect soft warning ═══
+        if not self.dry_run and output_path.exists():
+            self._warn_black_frames(output_path)
 
         file_size_mb = output_path.stat().st_size / (1024 * 1024) if output_path.exists() else 0
         logger.info(f"Final video: {duration:.1f}s, {file_size_mb:.1f}MB, {subtitle_count} subtitles")
@@ -683,8 +696,10 @@ class S6Editing(BaseStage):
             return (20, 40, 80)
 
     # ═══════════════════════════════════════════════════
-    # 싱크 정렬 (기존 유지)
+    # 씬-나레이션 싱크 정렬 (voice segment fuzzy matching)
     # ═══════════════════════════════════════════════════
+
+    _last_alignment_info: list[dict] = []  # 마지막 alignment drift 정보
 
     def _compute_segment_aligned_durations(
         self,
@@ -698,15 +713,28 @@ class S6Editing(BaseStage):
         if n_scenes == 0:
             return []
 
+        # 1순위: voice segments fuzzy alignment (핵심 경로)
+        if voice.segments and len(voice.segments) >= 3:
+            durations, drift_info = self._align_scenes_to_voice(
+                scenes, voice, target_duration,
+            )
+            self._last_alignment_info = drift_info
+            if durations:
+                logger.info(
+                    f"Voice-aligned: {len(durations)} scenes, "
+                    f"total={sum(durations):.1f}s, target={target_duration:.1f}s"
+                )
+                durations = self._cap_scene_durations(durations, scenes, target_duration)
+                return durations
+
+        # 2순위: section_timings 매칭 (유지)
+        self._last_alignment_info = []
         if voice.section_timings and len(voice.section_timings) == n_scenes:
             durations = self._snap_to_sentence_boundaries(
                 voice.section_timings, voice.segments, target_duration
             )
-            logger.info(
-                f"Sentence-snapped durations: {durations} "
-                f"(total={sum(durations):.1f}s, audio={target_duration:.1f}s)"
-            )
         else:
+            # 3순위: proportional fallback
             storyboard_durations = [max(s.duration, self.MIN_SCENE_DURATION) for s in scenes]
             sb_total = sum(storyboard_durations)
             if abs(sb_total - target_duration) < 2.0:
@@ -717,10 +745,164 @@ class S6Editing(BaseStage):
             else:
                 durations = storyboard_durations
 
-        # ═══ Duration capping: 과도한 단일 씬 방지 ═══
         durations = self._cap_scene_durations(durations, scenes, target_duration)
-
         return durations
+
+    # ── fuzzy alignment 구현 ──
+
+    @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        """텍스트 정규화 — 공백/구두점 통일."""
+        import re
+        text = re.sub(r'\s+', ' ', text.strip())
+        text = re.sub(r'[,.!?;:·…""\'\'\"\'()（）\[\]{}]', '', text)
+        return text.lower()
+
+    def _align_scenes_to_voice(
+        self,
+        scenes: list[Any],
+        voice: VoiceResult,
+        target_duration: float,
+    ) -> tuple[list[float], list[dict]]:
+        """각 scene.narration_text를 voice segments에 fuzzy match하여 정확한 타이밍 결정.
+
+        Returns: (durations, drift_info)
+        """
+        from difflib import SequenceMatcher
+
+        segments = voice.segments
+        if not segments:
+            return [], []
+
+        # ── 전체 transcript 구축 + char offset → time 매핑 ──
+        transcript_parts: list[str] = []
+        # 각 segment의 시작 char offset 기록
+        seg_char_starts: list[int] = []
+        cursor = 0
+        for seg in segments:
+            seg_char_starts.append(cursor)
+            text = seg.text.strip()
+            transcript_parts.append(text)
+            cursor += len(text) + 1  # +1 for space
+        full_transcript = " ".join(transcript_parts)
+        norm_transcript = self._normalize_for_match(full_transcript)
+
+        def _char_to_time(char_pos: int) -> float:
+            """transcript char position → audio time (초)."""
+            # 해당 char가 어느 segment에 속하는지 찾기
+            for i in range(len(seg_char_starts) - 1, -1, -1):
+                if char_pos >= seg_char_starts[i]:
+                    seg = segments[i]
+                    seg_text_len = len(seg.text.strip())
+                    if seg_text_len == 0:
+                        return seg.start
+                    local_pos = char_pos - seg_char_starts[i]
+                    ratio = min(local_pos / seg_text_len, 1.0)
+                    return seg.start + ratio * (seg.end - seg.start)
+            return 0.0
+
+        # ── 각 scene을 순차 fuzzy match ──
+        matched_spans: list[tuple[float, float, float]] = []  # (audio_start, audio_end, confidence)
+        search_from = 0  # 순차 제약
+
+        for scene in scenes:
+            narr = getattr(scene, 'narration_text', '') or ''
+            norm_narr = self._normalize_for_match(narr)
+
+            if len(norm_narr) < 5:
+                # 너무 짧은 텍스트 → 매치 불가
+                matched_spans.append((-1, -1, 0.0))
+                continue
+
+            # sliding window: narr 길이의 0.7~1.3배 범위에서 탐색
+            best_ratio = 0.0
+            best_start = search_from
+            best_end = min(search_from + len(norm_narr), len(norm_transcript))
+            window_min = max(int(len(norm_narr) * 0.5), 10)
+            window_max = min(int(len(norm_narr) * 1.5), len(norm_transcript) - search_from)
+
+            # 성능을 위해 탐색 범위 제한 (norm_narr 길이의 3배까지만)
+            search_end = min(search_from + len(norm_narr) * 4, len(norm_transcript))
+
+            for win_size in [len(norm_narr), window_min, window_max]:
+                if win_size <= 0 or win_size > search_end - search_from:
+                    continue
+                for pos in range(search_from, search_end - win_size + 1, max(1, win_size // 10)):
+                    candidate = norm_transcript[pos:pos + win_size]
+                    sm = SequenceMatcher(None, norm_narr[:200], candidate[:200], autojunk=False)
+                    ratio = sm.ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_start = pos
+                        best_end = pos + win_size
+
+            if best_ratio >= 0.3:
+                audio_start = _char_to_time(best_start)
+                audio_end = _char_to_time(best_end)
+                matched_spans.append((audio_start, audio_end, best_ratio))
+                search_from = best_end  # 순차 제약 유지
+            else:
+                matched_spans.append((-1, -1, best_ratio))
+
+        # ── 매치 결과 → duration 변환 ──
+        durations: list[float] = []
+        drift_info: list[dict] = []
+        cursor_time = 0.0
+
+        for i, (audio_s, audio_e, conf) in enumerate(matched_spans):
+            scene = scenes[i]
+            scene_num = getattr(scene, 'scene_number', i + 1)
+
+            if audio_s >= 0 and audio_e > audio_s and conf >= 0.3:
+                dur = round(audio_e - audio_s, 2)
+                dur = max(self.MIN_SCENE_DURATION, dur)
+                drift = round(cursor_time - audio_s, 2)
+            else:
+                # 매치 실패 → narration 길이 비례 배분
+                narr_len = len(getattr(scene, 'narration_text', '') or '')
+                total_chars = sum(len(getattr(s, 'narration_text', '') or '') for s in scenes)
+                dur = round((narr_len / max(total_chars, 1)) * target_duration, 2)
+                dur = max(self.MIN_SCENE_DURATION, dur)
+                drift = 0.0
+                audio_s = cursor_time
+
+            durations.append(dur)
+            drift_info.append({
+                'scene': scene_num,
+                'matched_start': round(audio_s, 1),
+                'assigned_start': round(cursor_time, 1),
+                'drift': drift,
+                'confidence': round(conf, 2),
+            })
+            cursor_time += dur
+
+        # ── 합계 보정 ──
+        total = sum(durations)
+        if total > 0 and abs(total - target_duration) > 0.1:
+            scale = target_duration / total
+            abs_min = max(1.0, target_duration / len(durations) * 0.3)
+            durations = [max(abs_min, round(d * scale, 2)) for d in durations]
+            diff = round(target_duration - sum(durations), 2)
+            if abs(diff) > 0.01 and durations:
+                longest = max(range(len(durations)), key=lambda i: durations[i])
+                durations[longest] = round(durations[longest] + diff, 2)
+
+        # ── drift 경고 ──
+        max_drift = max((abs(d['drift']) for d in drift_info), default=0)
+        if max_drift > 3.0:
+            warn_scenes = [d for d in drift_info if abs(d['drift']) > 3.0]
+            logger.warning(
+                f"Alignment drift >3s: {len(warn_scenes)} scenes, "
+                f"max={max_drift:.1f}s"
+            )
+
+        logger.info(
+            f"Fuzzy alignment: {len(durations)} scenes, "
+            f"matched={sum(1 for s in matched_spans if s[2] >= 0.3)}/{len(scenes)}, "
+            f"max_drift={max_drift:.1f}s"
+        )
+
+        return durations, drift_info
 
     def _cap_scene_durations(
         self,
@@ -1124,6 +1306,28 @@ class S6Editing(BaseStage):
     # ═══════════════════════════════════════════════════
     # Optional Enhancers (기존 유지)
     # ═══════════════════════════════════════════════════
+
+    def _warn_black_frames(self, video_path: Path) -> None:
+        """합성 영상에서 1초+ 검은 구간 감지 시 경고 로그."""
+        import re as _re
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-i", str(video_path),
+                 "-vf", "blackdetect=d=1.0:pix_th=0.10",
+                 "-an", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=120,
+            )
+            for match in _re.finditer(
+                r"black_start:(\d+\.?\d*)\s+black_end:(\d+\.?\d*)\s+black_duration:(\d+\.?\d*)",
+                result.stderr,
+            ):
+                start, end, dur = float(match.group(1)), float(match.group(2)), float(match.group(3))
+                if dur >= 1.0:
+                    logger.warning(
+                        f"BLACKDETECT: {dur:.1f}s black at {start:.1f}-{end:.1f}s"
+                    )
+        except Exception as e:
+            logger.debug(f"Black detect skipped: {e}")
 
     async def _apply_enhancers(
         self, output: Path, applied_effects: list[str]

@@ -744,7 +744,7 @@ class S5Media(BaseStage):
             logger.debug(f"Visual QA failed: {e}")
 
     @staticmethod
-    def _is_mostly_black(video_path: Path, threshold: float = 0.4) -> bool:
+    def _is_mostly_black(video_path: Path, threshold: float = 0.2) -> bool:
         """비디오에서 검은 구간 비율을 검사. threshold 이상이면 True.
 
         ffmpeg blackdetect로 검은 구간 감지 후 전체 대비 비율 계산.
