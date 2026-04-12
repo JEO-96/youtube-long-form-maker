@@ -654,13 +654,24 @@ class S5Media(BaseStage):
 
         # ═══ intent별 레이아웃 분기 (visual_templates 모듈 사용) ═══
         if intent == VisualIntent.CHART:
-            variant = vt._select_chart_variant(narration)
-            if variant == "gauge":
-                vt.draw_chart_gauge(draw, narration, keywords, accent, primary, vis_desc)
-            elif variant == "line":
-                vt.draw_chart_line(draw, narration, keywords, accent, primary, vis_desc)
+            # 숫자가 없으면 chart를 쓰지 않고 fallback
+            has_data = vt.can_draw_chart(narration)
+            if not has_data:
+                logger.info(
+                    f"Scene {getattr(scene, 'scene_number', '?')}: "
+                    "no numeric data for chart → emphasis fallback"
+                )
+                vt.draw_emphasis_card(draw, narration, keywords, accent, vis_desc)
             else:
-                vt.draw_chart_kpi_bar(draw, narration, keywords, accent, primary, vis_desc)
+                variant = vt._select_chart_variant(narration)
+                if variant == "gauge":
+                    vt.draw_chart_gauge(draw, narration, keywords, accent, primary, vis_desc)
+                elif variant == "line":
+                    vt.draw_chart_line(draw, narration, keywords, accent, primary, vis_desc)
+                elif variant == "kpi_only":
+                    vt.draw_chart_kpi_only(draw, narration, keywords, accent, primary, vis_desc)
+                else:
+                    vt.draw_chart_kpi_bar(draw, narration, keywords, accent, primary, vis_desc)
         elif intent == VisualIntent.CHECKLIST:
             vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
         elif intent == VisualIntent.COMPARISON_CARD:

@@ -261,18 +261,75 @@ def _draw_header_bar(
 # CHART 3종 변형
 # ═══════════════════════════════════════════════════
 
+def can_draw_chart(narration: str) -> bool:
+    """narration에 차트로 표현할 숫자 데이터가 있는지 판별.
+
+    숫자가 0개면 chart를 그리면 안 됨 → False.
+    """
+    numbers = _extract_numbers(narration)
+    years = _extract_years(narration)
+    return len(numbers) >= 1 or len(years) >= 2
+
+
 def _select_chart_variant(narration: str) -> str:
     """narration 성격에 따라 chart 변형 선택."""
-    text_lower = narration.lower()
-    # gauge: 위험/부담/DSR/부채
-    if any(kw in narration for kw in ['위험', '부담', 'DSR', '부채', '리스크', '과열', '경고']):
-        return "gauge"
-    # line: 추이/추세/변화/연도 비교
+    numbers = _extract_numbers(narration)
     years = _extract_years(narration)
+
+    # gauge: 위험/부담/DSR/부채 + 퍼센트가 있을 때
+    if any(kw in narration for kw in ['위험', '부담', 'DSR', '부채', '리스크', '과열', '경고']):
+        if any('%' in n for n in numbers):
+            return "gauge"
+
+    # line: 연도 2개 이상 또는 추세 키워드
     if len(years) >= 2 or any(kw in narration for kw in ['추이', '추세', '변화', '흐름', '전망']):
         return "line"
-    # default: KPI + bar
+
+    # 숫자 1개만 있으면 KPI 단독
+    if len(numbers) == 1 and len(years) < 2:
+        return "kpi_only"
+
+    # default: 비교 bar
     return "kpi_bar"
+
+
+def _extract_y_unit(narration: str, keywords: list[str]) -> str:
+    """narration에서 Y축 단위 추출."""
+    for pattern, unit in [
+        (r'\d+\s*만\s*호', "만 호"), (r'\d+\s*만\s*건', "만 건"),
+        (r'\d+\s*만\s*원', "만 원"), (r'\d+\s*억', "억 원"),
+        (r'\d+\s*%', "%"), (r'\d+\s*배', "배"),
+        (r'\d+\s*건', "건"), (r'거래량', "거래량"), (r'물량', "물량"),
+    ]:
+        if re.search(pattern, narration):
+            return unit
+    return keywords[0] if keywords else ""
+
+
+def _build_bar_data(
+    numbers: list[str], keywords: list[str], years: list[str],
+) -> list[tuple[str, float, bool]]:
+    """narration 숫자로 실제 막대 데이터 구성. [(라벨, 값, 강조여부)]."""
+    bars: list[tuple[str, float, bool]] = []
+
+    # 숫자+키워드 쌍 매칭
+    for i, num in enumerate(numbers[:6]):
+        clean = re.sub(r'[^\d.]', '', num)
+        val = float(clean) if clean else 0
+        label = keywords[i] if i < len(keywords) else num
+        bars.append((str(label), val, i == 0))
+
+    # 연도 기반 (숫자가 부족하면)
+    if not bars and years:
+        import random
+        rng = random.Random(hash("".join(years)))
+        for yr in years[:6]:
+            bars.append((yr, rng.uniform(30, 100), False))
+        if bars:
+            max_idx = max(range(len(bars)), key=lambda i: bars[i][1])
+            bars[max_idx] = (bars[max_idx][0], bars[max_idx][1], True)
+
+    return bars
 
 
 def draw_chart_kpi_bar(
@@ -281,12 +338,13 @@ def draw_chart_kpi_bar(
     accent: tuple, primary: tuple,
     vis_desc: str = "",
 ) -> None:
-    """Chart 변형 A: KPI 카드 + 라벨 막대 차트."""
+    """Chart 변형 A: narration 숫자 기반 비교 막대 차트."""
     title = derive_scene_title(narration, vis_desc, "chart")
     _draw_header_bar(draw, W, title, accent, chip="DATA")
 
     numbers = _extract_numbers(narration)
     years = _extract_years(narration)
+    y_unit = _extract_y_unit(narration, keywords)
 
     # KPI 카드 (우측 상단)
     kpi_x = W - 380
@@ -296,74 +354,85 @@ def draw_chart_kpi_bar(
                        numbers[0], accent, (40, 50, 70))
     if len(numbers) > 1:
         _draw_kpi_card(draw, kpi_x, 220, 320, 90,
-                       keywords[1] if len(keywords) > 1 else "비교 수치",
+                       keywords[1] if len(keywords) > 1 else "비교",
                        numbers[1], accent, (40, 50, 70))
 
-    # 막대 차트 — 밝은 막대 + 키워드 라벨
-    n_bars = min(len(years) if years else 5, 7)
-    if n_bars < 3:
-        n_bars = 5
-    bar_w = min(130, (W - 500) // (n_bars + 1))
+    # 실제 데이터로 막대 구성
+    bars = _build_bar_data(numbers, keywords, years)
+    n_bars = max(len(bars), 2)
+    bar_w = min(140, (W - 550) // (n_bars + 1))
     gap = bar_w // 2
-    chart_left = 140
+    chart_left = 160
     bar_y_base = 680
-    chart_w = n_bars * (bar_w + gap)
-    start_x = chart_left + (W - 420 - chart_left - chart_w) // 2
-
-    # Y축 단위 추출
-    y_unit = ""
-    for pattern, unit in [
-        (r'\d+\s*만\s*호', "만 호"), (r'\d+\s*만\s*건', "만 건"),
-        (r'\d+\s*%', "%"), (r'\d+\s*배', "배"), (r'\d+\s*억', "억"),
-    ]:
-        if re.search(pattern, narration):
-            y_unit = unit
-            break
+    total_w = n_bars * (bar_w + gap)
+    start_x = chart_left + (W - 440 - chart_left - total_w) // 2
 
     # Y축 기준선 + 라벨
+    if bars:
+        max_val = max(b[1] for b in bars) or 1
+    else:
+        max_val = 100
     for i, gy in enumerate([380, 530, 680]):
         draw.line([(chart_left - 10, gy), (W - 420, gy)], fill=(70, 80, 100), width=1)
-        label = ["높음", "중간", ""][i]
-        if label:
-            draw_text_box(draw, label, (40, gy - 12, chart_left - 15, gy + 12),
-                           max_font_size=14, fill=(120, 125, 140), align="right", max_lines=1)
     if y_unit:
-        draw_text_box(draw, f"({y_unit})", (40, 350, chart_left - 15, 375),
+        draw_text_box(draw, f"({y_unit})", (30, 350, chart_left - 15, 375),
                        max_font_size=14, fill=(150, 155, 170), align="right", max_lines=1)
 
-    import random
-    rng = random.Random(hash(narration) % 10000)
-    heights = [rng.randint(100, 280) for _ in range(n_bars)]
-    highlight_idx = heights.index(max(heights))
-
-    # 라벨: 연도 > 키워드에서 추출 > 숫자 인덱스
-    labels = years[:n_bars] if years else keywords[:n_bars]
-    while len(labels) < n_bars:
-        labels.append(f"{len(labels)+1}")
-
-    for i in range(n_bars):
+    # 막대 렌더링 — 실제 값에 비례
+    for i, (label, val, highlight) in enumerate(bars[:n_bars]):
         x = start_x + i * (bar_w + gap)
-        bh = heights[i]
-        is_highlight = (i == highlight_idx)
-        # 밝은 색 막대: 강조는 accent, 나머지는 밝은 회색-청색
-        bar_color = accent if is_highlight else (80, 95, 130)
+        bh = int((val / max_val) * 280) if max_val > 0 else 100
+        bh = max(30, min(300, bh))
+        bar_color = accent if highlight else (80, 95, 130)
         draw.rounded_rectangle(
             [(x, bar_y_base - bh), (x + bar_w, bar_y_base)],
             radius=4, fill=bar_color,
         )
-        # 막대 위에 값 표시 (강조 막대만)
-        if is_highlight and numbers:
-            draw_text_box(draw, numbers[0],
-                           (x, bar_y_base - bh - 35, x + bar_w, bar_y_base - bh - 5),
-                           max_font_size=20, fill="white", align="center", max_lines=1)
+        # 막대 위 값 표시
+        val_text = numbers[i] if i < len(numbers) else f"{val:.0f}"
+        draw_text_box(draw, val_text,
+                       (x - 10, bar_y_base - bh - 32, x + bar_w + 10, bar_y_base - bh - 5),
+                       max_font_size=18, fill="white", align="center", max_lines=1)
         # X축 라벨
-        draw_text_box(draw, str(labels[i]),
-                       (x - 5, bar_y_base + 8, x + bar_w + 5, bar_y_base + 35),
-                       max_font_size=16, fill=(170, 175, 190), align="center", max_lines=1)
+        draw_text_box(draw, label,
+                       (x - 10, bar_y_base + 8, x + bar_w + 10, bar_y_base + 38),
+                       max_font_size=15, fill=(170, 175, 190), align="center", max_lines=1)
+
+    # "예시 시각화" 라벨 (실제 데이터가 아님을 명시)
+    _draw_badge(draw, W - 200, SAFE_BOTTOM - 55, "예시 시각화", (140, 140, 150), (45, 55, 70))
 
     # 나레이션 요약
     draw_text_box(draw, narration, (80, 720, W - 80, SAFE_BOTTOM - 30),
-                   max_font_size=24, min_font_size=16, fill=(190, 190, 200), max_lines=4)
+                   max_font_size=22, min_font_size=16, fill=(190, 190, 200), max_lines=3)
+    _draw_footer(draw, W)
+
+
+def draw_chart_kpi_only(
+    draw: ImageDraw.ImageDraw,
+    narration: str, keywords: list[str],
+    accent: tuple, primary: tuple,
+    vis_desc: str = "",
+) -> None:
+    """숫자 1개만 있을 때: 큰 KPI 카드 + 나레이션."""
+    title = derive_scene_title(narration, vis_desc, "chart")
+    _draw_header_bar(draw, W, title, accent, chip="DATA")
+
+    numbers = _extract_numbers(narration)
+    main_num = numbers[0] if numbers else "—"
+    main_label = keywords[0] if keywords else "핵심 수치"
+
+    # 큰 KPI (중앙)
+    _draw_rounded_card(draw, (W // 2 - 250, 180, W // 2 + 250, 400),
+                        fill=(35, 45, 65), outline=accent, radius=16)
+    draw_text_box(draw, main_num, (W // 2 - 230, 200, W // 2 + 230, 320),
+                   max_font_size=80, min_font_size=40, fill="white", align="center", max_lines=1)
+    draw_text_box(draw, main_label, (W // 2 - 230, 330, W // 2 + 230, 390),
+                   max_font_size=28, fill=(180, 185, 200), align="center", max_lines=1)
+
+    # 나레이션
+    draw_text_box(draw, narration, (100, 440, W - 100, SAFE_BOTTOM - 30),
+                   max_font_size=26, min_font_size=18, fill=(190, 190, 200),
+                   align="center", max_lines=6)
     _draw_footer(draw, W)
 
 
@@ -373,58 +442,37 @@ def draw_chart_line(
     accent: tuple, primary: tuple,
     vis_desc: str = "",
 ) -> None:
-    """Chart 변형 B: 라인 트렌드 차트."""
+    """Chart 변형 B: 연도 기반 라인 트렌드."""
     title = derive_scene_title(narration, vis_desc, "chart")
     _draw_header_bar(draw, W, title, accent, chip="TREND")
 
     numbers = _extract_numbers(narration)
     years = _extract_years(narration)
+    y_unit = _extract_y_unit(narration, keywords)
 
     if numbers:
         _draw_kpi_card(draw, W - 380, 110, 320, 90,
                        keywords[0] if keywords else "주요 지표", numbers[0],
                        accent, (40, 50, 70))
 
-    # Y축 단위 추출: narration에서 "만 호", "건", "%", "만 원" 등
-    y_unit = ""
-    for pattern, unit in [
-        (r'\d+\s*만\s*호', "만 호"), (r'\d+\s*만\s*건', "만 건"),
-        (r'\d+\s*만\s*원', "만 원"), (r'\d+\s*억', "억 원"),
-        (r'\d+\s*%', "%"), (r'\d+\s*배', "배"),
-        (r'\d+\s*건', "건"), (r'\d+\s*호', "호"),
-        (r'거래량', "거래량"), (r'물량', "물량"),
-    ]:
-        if re.search(pattern, narration):
-            y_unit = unit
-            break
-    if not y_unit and keywords:
-        y_unit = keywords[0]
-
-    # 차트 영역 (Y축 라벨 공간 확보)
+    # 차트 영역
     chart_left, chart_right = 180, W - 140
     chart_top, chart_bottom = 240, 640
     chart_w = chart_right - chart_left
     chart_h = chart_bottom - chart_top
 
-    # Y축 기준선 + 수치 라벨
-    y_labels = ["높음", "", "중간", "", "낮음"]
+    # Y축 기준선
     for i in range(5):
         gy = chart_top + i * (chart_h // 4)
         draw.line([(chart_left, gy), (chart_right, gy)], fill=(65, 75, 95), width=1)
-        if y_labels[i]:
-            draw_text_box(draw, y_labels[i],
-                           (40, gy - 10, chart_left - 10, gy + 10),
-                           max_font_size=14, fill=(130, 135, 150), align="right", max_lines=1)
-
-    # Y축 단위 라벨 (세로)
     if y_unit:
-        draw_text_box(draw, f"({y_unit})", (40, chart_top - 30, chart_left - 10, chart_top - 5),
+        draw_text_box(draw, f"({y_unit})", (30, chart_top - 30, chart_left - 10, chart_top - 5),
                        max_font_size=14, fill=(150, 155, 170), align="right", max_lines=1)
 
-    # 데이터 포인트
+    # 데이터 포인트 — 연도별
+    n_points = max(len(years), 5)
     import random
     rng = random.Random(hash(narration) % 10000)
-    n_points = max(len(years), 7)
     points = []
     y_val = rng.randint(chart_h // 4, chart_h * 3 // 4)
     for i in range(n_points):
@@ -432,19 +480,18 @@ def draw_chart_line(
         y_val = max(30, min(chart_h - 30, y_val + rng.randint(-50, 50)))
         points.append((x, chart_top + chart_h - y_val))
 
-    # 영역 채우기: polygon으로 깔끔하게 (반투명 대신 어두운 accent)
-    area_color = (accent[0] // 4, accent[1] // 4, accent[2] // 4)
+    # 영역 채우기
+    area_color = (accent[0] // 5, accent[1] // 5, accent[2] // 5)
     area_points = list(points) + [(points[-1][0], chart_bottom), (points[0][0], chart_bottom)]
     draw.polygon(area_points, fill=area_color)
 
-    # 라인 (두꺼운 흰색 라인으로 잘 보이게)
+    # 라인 + 포인트
     for i in range(len(points) - 1):
         draw.line([points[i], points[i + 1]], fill="white", width=3)
-    # 데이터 포인트
     for p in points:
         draw.ellipse((p[0] - 5, p[1] - 5, p[0] + 5, p[1] + 5), fill=accent, outline="white", width=2)
 
-    # X축 라벨
+    # X축 라벨 (연도)
     x_labels = years[:n_points] if years else [str(2020 + i) for i in range(n_points)]
     while len(x_labels) < n_points:
         x_labels.append("")
@@ -455,7 +502,7 @@ def draw_chart_line(
                            (x - 30, chart_bottom + 10, x + 30, chart_bottom + 32),
                            max_font_size=15, fill=(160, 165, 180), align="center", max_lines=1)
 
-    # 나레이션
+    _draw_badge(draw, W - 200, SAFE_BOTTOM - 55, "예시 시각화", (140, 140, 150), (45, 55, 70))
     draw_text_box(draw, narration, (80, 690, W - 80, SAFE_BOTTOM - 30),
                    max_font_size=22, min_font_size=16, fill=(190, 190, 200), max_lines=3)
     _draw_footer(draw, W)
@@ -477,24 +524,14 @@ def draw_chart_gauge(
     outer_r = 220
     inner_r = 160
 
-    # 반원 게이지 — arc 방식으로 깔끔하게
-    # 3구간 색상: 녹색(안전) → 노란(주의) → 빨간(위험)
-    gauge_colors = [
-        (-180, -108, (50, 200, 80)),   # 안전 (0~40%)
-        (-108, -54,  (230, 190, 40)),  # 주의 (40~70%)
-        (-54, 0,     accent),          # 위험 (70~100%)
-    ]
-    for start_a, end_a, color in gauge_colors:
-        draw.arc(
-            [(cx - outer_r, cy - outer_r), (cx + outer_r, cy + outer_r)],
-            start=start_a, end=end_a, fill=color, width=outer_r - inner_r,
-        )
-
-    # 내부 원 (배경색으로 가운데 비움)
-    draw.ellipse(
-        (cx - inner_r + 5, cy - inner_r + 5, cx + inner_r - 5, cy + inner_r - 5),
-        fill=(35, 45, 65),
-    )
+    # 3구간 게이지 아크
+    for start_a, end_a, color in [
+        (-180, -108, (50, 200, 80)), (-108, -54, (230, 190, 40)), (-54, 0, accent),
+    ]:
+        draw.arc([(cx - outer_r, cy - outer_r), (cx + outer_r, cy + outer_r)],
+                  start=start_a, end=end_a, fill=color, width=outer_r - inner_r)
+    draw.ellipse((cx - inner_r + 5, cy - inner_r + 5, cx + inner_r - 5, cy + inner_r - 5),
+                  fill=(35, 45, 65))
 
     # 게이지 값
     gauge_val = 0.6
@@ -508,34 +545,24 @@ def draw_chart_gauge(
 
     # 바늘
     needle_angle = math.radians(-180 + gauge_val * 180)
-    needle_len = inner_r - 20
-    nx = cx + int(needle_len * math.cos(needle_angle))
-    ny = cy + int(needle_len * math.sin(needle_angle))
-    draw.line([(cx, cy), (nx, ny)], fill="white", width=4)
+    nl = inner_r - 20
+    draw.line([(cx, cy), (cx + int(nl * math.cos(needle_angle)), cy + int(nl * math.sin(needle_angle)))],
+               fill="white", width=4)
     draw.ellipse((cx - 12, cy - 12, cx + 12, cy + 12), fill="white")
 
-    # 게이지 라벨
     draw_text_box(draw, "안전", (cx - outer_r - 40, cy + 20, cx - outer_r + 60, cy + 50),
                    max_font_size=16, fill=(60, 180, 80), align="center", max_lines=1)
     draw_text_box(draw, "위험", (cx + outer_r - 60, cy + 20, cx + outer_r + 40, cy + 50),
                    max_font_size=16, fill=accent, align="center", max_lines=1)
 
-    # 핵심 수치
     if numbers:
         draw_text_box(draw, numbers[0], (cx - 150, cy + 50, cx + 150, cy + 130),
                        max_font_size=60, fill="white", align="center", max_lines=1)
 
-    # KPI 카드 (좌우)
     if len(numbers) > 1:
         _draw_kpi_card(draw, 80, 150, 280, 80,
-                       keywords[0] if keywords else "지표", numbers[1],
-                       accent, (40, 50, 70))
-    if len(numbers) > 2:
-        _draw_kpi_card(draw, W - 360, 150, 280, 80,
-                       keywords[1] if len(keywords) > 1 else "기준", numbers[2],
-                       accent, (40, 50, 70))
+                       keywords[0] if keywords else "지표", numbers[1], accent, (40, 50, 70))
 
-    # 나레이션
     draw_text_box(draw, narration, (80, 620, W - 80, SAFE_BOTTOM - 30),
                    max_font_size=22, min_font_size=16, fill=(190, 190, 200), max_lines=4)
     _draw_footer(draw, W)
