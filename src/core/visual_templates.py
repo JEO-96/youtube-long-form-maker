@@ -131,17 +131,130 @@ def _draw_footer(
                    align="right", max_lines=1)
 
 
+# ═══════════════════════════════════════════════════
+# 씬 제목 생성
+# ═══════════════════════════════════════════════════
+
+# intent → 카테고리 칩 라벨
+_INTENT_CHIP: dict[str, str] = {
+    "chart": "DATA",
+    "checklist": "CHECK",
+    "comparison_card": "COMPARE",
+    "infographic": "INFO",
+    "emphasis_caption": "KEY",
+    "real_broll": "SCENE",
+    "map": "MAP",
+    "talking_head_style": "TALK",
+    "closing_cta": "CTA",
+}
+
+# intent → 최종 fallback 제목 (derive_scene_title에서 모든 추출이 실패한 경우)
+_INTENT_FALLBACK_TITLE: dict[str, str] = {
+    "chart": "데이터 분석",
+    "checklist": "확인 사항",
+    "comparison_card": "비교 분석",
+    "infographic": "핵심 정보",
+    "emphasis_caption": "핵심 포인트",
+    "real_broll": "현장 화면",
+    "map": "지역 분석",
+    "talking_head_style": "전문가 분석",
+    "closing_cta": "구독 안내",
+}
+
+
+def derive_scene_title(
+    narration: str = "",
+    vis_desc: str = "",
+    intent: str = "",
+    max_len: int = 24,
+) -> str:
+    """씬별 meaningful 제목 생성. 빈 문자열 절대 반환하지 않음.
+
+    우선순위:
+    1. visual_description에서 핵심 제목 추출 (첫 문장, 12~24자)
+    2. narration 첫 문장을 max_len 이내로 요약
+    3. intent 기반 fallback 제목
+    """
+    # 1순위: visual_description
+    if vis_desc and len(vis_desc.strip()) >= 5:
+        title = _extract_first_phrase(vis_desc, max_len)
+        if title:
+            return title
+
+    # 2순위: narration 첫 문장
+    if narration and len(narration.strip()) >= 5:
+        title = _extract_first_phrase(narration, max_len)
+        if title:
+            return title
+
+    # 3순위: intent fallback
+    return _INTENT_FALLBACK_TITLE.get(intent, "핵심 내용")
+
+
+def _extract_first_phrase(text: str, max_len: int = 24) -> str:
+    """텍스트에서 첫 의미 있는 구절을 max_len 이내로 추출."""
+    text = text.strip()
+    if not text:
+        return ""
+
+    # 첫 문장 추출 (한국어 어미 + 구두점 기준)
+    match = re.match(r'^(.+?[.!?다요죠까니])\s', text)
+    first = match.group(1) if match else text
+
+    # max_len 이내로 자르기
+    if len(first) <= max_len:
+        return first
+
+    # 자연스러운 절단: 쉼표/공백 경계
+    cut = first[:max_len]
+    last_space = cut.rfind(" ")
+    last_comma = max(cut.rfind(","), cut.rfind("，"))
+    best = max(last_space, last_comma)
+    if best > max_len * 0.4:
+        cut = cut[:best].rstrip(",，. ")
+
+    if len(cut) < 5:
+        cut = first[:max_len]
+
+    return cut
+
+
 def _draw_header_bar(
     draw: ImageDraw.ImageDraw,
     W: int,
     title: str,
     accent: tuple,
     height: int = 80,
+    chip: str = "",
 ) -> None:
-    """상단 색상 헤더 바."""
+    """상단 색상 헤더 바 — [카테고리 칩] + 실제 제목.
+
+    chip이 있으면 "[CHIP] 제목" 형태로 렌더링.
+    chip이 없으면 제목만 렌더링.
+    """
     draw.rectangle([(0, 0), (W, height)], fill=accent)
-    draw_text_box(draw, title, (50, 15, W - 50, height - 10),
-                   max_font_size=38, min_font_size=24, fill="white", max_lines=1)
+
+    if chip:
+        # 칩 배경
+        chip_font = get_korean_font(size=16, bold=True)
+        chip_bbox = draw.textbbox((0, 0), chip, font=chip_font)
+        chip_w = chip_bbox[2] - chip_bbox[0] + 16
+        chip_h = 26
+        chip_x = 40
+        chip_y = (height - chip_h) // 2
+        draw.rounded_rectangle(
+            (chip_x, chip_y, chip_x + chip_w, chip_y + chip_h),
+            radius=4, fill=(255, 255, 255, 60),
+        )
+        draw.text((chip_x + 8, chip_y + 3), chip, fill="white", font=chip_font)
+
+        # 제목 (칩 오른쪽)
+        title_x = chip_x + chip_w + 16
+        draw_text_box(draw, title, (title_x, 12, W - 50, height - 10),
+                       max_font_size=34, min_font_size=20, fill="white", max_lines=1)
+    else:
+        draw_text_box(draw, title, (50, 12, W - 50, height - 10),
+                       max_font_size=38, min_font_size=24, fill="white", max_lines=1)
 
 
 # ═══════════════════════════════════════════════════
@@ -166,9 +279,11 @@ def draw_chart_kpi_bar(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple, primary: tuple,
+    vis_desc: str = "",
 ) -> None:
     """Chart 변형 A: KPI 카드 + 라벨 막대 차트."""
-    _draw_header_bar(draw, W, "DATA INSIGHT", accent)
+    title = derive_scene_title(narration, vis_desc, "chart")
+    _draw_header_bar(draw, W, title, accent, chip="DATA")
 
     numbers = _extract_numbers(narration)
     years = _extract_years(narration)
@@ -230,9 +345,11 @@ def draw_chart_line(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple, primary: tuple,
+    vis_desc: str = "",
 ) -> None:
     """Chart 변형 B: 라인 트렌드 차트."""
-    _draw_header_bar(draw, W, "TREND ANALYSIS", accent)
+    title = derive_scene_title(narration, vis_desc, "chart")
+    _draw_header_bar(draw, W, title, accent, chip="TREND")
 
     numbers = _extract_numbers(narration)
     years = _extract_years(narration)
@@ -301,9 +418,11 @@ def draw_chart_gauge(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple, primary: tuple,
+    vis_desc: str = "",
 ) -> None:
     """Chart 변형 C: 리스크 게이지 미터."""
-    _draw_header_bar(draw, W, "RISK METER", accent)
+    title = derive_scene_title(narration, vis_desc, "chart")
+    _draw_header_bar(draw, W, title, accent, chip="RISK")
 
     numbers = _extract_numbers(narration)
 
@@ -379,6 +498,7 @@ def draw_comparison_card(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple, primary: tuple, secondary: tuple,
+    vis_desc: str = "",
 ) -> bool:
     """고도화된 비교 카드. 분리 실패 시 False 반환 → 호출측에서 fallback."""
     parts = re.split(r'(?:vs|VS|보다|반면|그러나|하지만|반대로|한편)', narration, maxsplit=1)
@@ -390,7 +510,12 @@ def draw_comparison_card(
     left_title, right_title = _extract_comparison_titles(narration)
 
     mid = W // 2
-    _draw_header_bar(draw, W, f"{left_title}  vs  {right_title}", accent)
+    comp_title = f"{left_title} vs {right_title}"
+    scene_title = derive_scene_title(narration, vis_desc, "comparison_card")
+    header_text = f"{comp_title}: {scene_title}" if scene_title != comp_title else comp_title
+    if len(header_text) > 30:
+        header_text = comp_title
+    _draw_header_bar(draw, W, header_text, accent, chip="COMPARE")
 
     # 좌우 카드 배경
     card_top = 110
@@ -437,9 +562,11 @@ def draw_checklist_card(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple, primary: tuple,
+    vis_desc: str = "",
 ) -> None:
     """고도화된 체크리스트 카드."""
-    _draw_header_bar(draw, W, "CHECK LIST", accent, height=70)
+    title = derive_scene_title(narration, vis_desc, "checklist")
+    _draw_header_bar(draw, W, title, accent, height=70, chip="CHECK")
 
     # 항목 추출: 문장 분리 + 최소 3개 보장
     items = re.split(r'[.!?다요]\s*', narration)
@@ -514,6 +641,7 @@ def draw_emphasis_card(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple,
+    vis_desc: str = "",
 ) -> None:
     """핵심 강조 캡션 — 숫자 + 키워드 + 보조 + 데이터 태그."""
     # 반투명 오버레이
@@ -561,9 +689,11 @@ def draw_infographic_card(
     draw: ImageDraw.ImageDraw,
     narration: str, keywords: list[str],
     accent: tuple, primary: tuple,
+    vis_desc: str = "",
 ) -> None:
     """인포그래픽 카드 — 번호 카드 + 나레이션."""
-    _draw_header_bar(draw, W, "INFORMATION", accent, height=70)
+    title = derive_scene_title(narration, vis_desc, "infographic")
+    _draw_header_bar(draw, W, title, accent, height=70, chip="INFO")
 
     items = keywords[:6] if keywords else re.split(r'[,，.]\s*', narration[:200])
     items = [it.strip() for it in items if it.strip() and len(it.strip()) > 2][:6]
@@ -609,8 +739,8 @@ def draw_default_card(
     scene_number: int = 0,
 ) -> None:
     """기본 카드뉴스 — 헤더 + 본문 + 섹션 번호 + 장식."""
-    title = vis_desc[:60] or narration[:40]
-    _draw_header_bar(draw, W, title, accent, height=100)
+    title = derive_scene_title(narration, vis_desc, "real_broll")
+    _draw_header_bar(draw, W, title, accent, height=100, chip="SCENE")
 
     if scene_number > 0:
         _draw_section_number(draw, W - 80, 110, scene_number, accent)

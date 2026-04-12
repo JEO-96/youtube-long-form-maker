@@ -139,10 +139,64 @@ class TestComparisonCardFallback:
 
     def test_no_comparison_keyword_falls_back(self, canvas):
         """비교 키워드가 없으면 comparison_card가 아닌 다른 레이아웃으로 fallback."""
-        # 비교 키워드 없는 텍스트
         text = "부동산 시장의 현황을 알려드립니다. 금리는 여전히 높습니다."
         import re
         parts = re.split(r'(?:vs|VS|보다|반면|그러나|하지만|반대로|한편)', text, maxsplit=1)
-        # 분리 실패: 한쪽이 너무 짧거나 분리 안됨
         should_fallback = len(parts) < 2 or len(parts[0].strip()) < 10 or len(parts[1].strip()) < 10
         assert should_fallback
+
+
+class TestDeriveSceneTitle:
+    """derive_scene_title 제목 생성 테스트."""
+
+    def test_from_vis_desc(self):
+        from src.core.visual_templates import derive_scene_title
+        title = derive_scene_title(
+            narration="긴 나레이션 텍스트입니다.",
+            vis_desc="전세가율 70% 기준선 분석",
+            intent="chart",
+        )
+        assert title
+        assert len(title) <= 24
+        assert "전세가율" in title
+
+    def test_from_narration_when_vis_desc_empty(self):
+        from src.core.visual_templates import derive_scene_title
+        title = derive_scene_title(
+            narration="PIR 9배 이하면 초록불, 매수 환경이 양호합니다.",
+            vis_desc="",
+            intent="chart",
+        )
+        assert title
+        assert len(title) <= 24
+
+    def test_fallback_when_both_empty(self):
+        from src.core.visual_templates import derive_scene_title
+        title = derive_scene_title(narration="", vis_desc="", intent="chart")
+        assert title == "데이터 분석"
+
+    def test_never_returns_empty(self):
+        from src.core.visual_templates import derive_scene_title
+        for intent in ["chart", "checklist", "comparison_card", "infographic",
+                        "emphasis_caption", "real_broll", "unknown", ""]:
+            title = derive_scene_title("", "", intent)
+            assert title, f"Empty title for intent={intent}"
+            assert len(title) >= 2
+
+    def test_long_vis_desc_truncated(self):
+        from src.core.visual_templates import derive_scene_title
+        long_desc = "이것은 매우 긴 시각 설명 텍스트로 24자를 훨씬 초과하는 내용을 포함하고 있습니다"
+        title = derive_scene_title("", long_desc, "chart", max_len=24)
+        assert len(title) <= 24
+
+    def test_generic_labels_not_used_as_title(self):
+        """DATA INSIGHT, CHECK LIST 같은 generic 라벨이 제목으로 사용되지 않는지."""
+        from src.core.visual_templates import derive_scene_title
+        generic = ["DATA INSIGHT", "CHECK LIST", "INFO", "TREND ANALYSIS", "RISK METER"]
+        for intent in ["chart", "checklist", "infographic"]:
+            title = derive_scene_title(
+                narration="부동산 시장의 핵심 데이터를 분석합니다.",
+                vis_desc="부동산 데이터 차트",
+                intent=intent,
+            )
+            assert title not in generic, f"Generic label '{title}' used for {intent}"

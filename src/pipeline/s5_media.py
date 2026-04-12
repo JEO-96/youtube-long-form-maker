@@ -656,21 +656,21 @@ class S5Media(BaseStage):
         if intent == VisualIntent.CHART:
             variant = vt._select_chart_variant(narration)
             if variant == "gauge":
-                vt.draw_chart_gauge(draw, narration, keywords, accent, primary)
+                vt.draw_chart_gauge(draw, narration, keywords, accent, primary, vis_desc)
             elif variant == "line":
-                vt.draw_chart_line(draw, narration, keywords, accent, primary)
+                vt.draw_chart_line(draw, narration, keywords, accent, primary, vis_desc)
             else:
-                vt.draw_chart_kpi_bar(draw, narration, keywords, accent, primary)
+                vt.draw_chart_kpi_bar(draw, narration, keywords, accent, primary, vis_desc)
         elif intent == VisualIntent.CHECKLIST:
-            vt.draw_checklist_card(draw, narration, keywords, accent, primary)
+            vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
         elif intent == VisualIntent.COMPARISON_CARD:
-            ok = vt.draw_comparison_card(draw, narration, keywords, accent, primary, secondary)
+            ok = vt.draw_comparison_card(draw, narration, keywords, accent, primary, secondary, vis_desc)
             if not ok:
-                vt.draw_checklist_card(draw, narration, keywords, accent, primary)
+                vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
         elif intent == VisualIntent.EMPHASIS_CAPTION:
-            vt.draw_emphasis_card(draw, narration, keywords, accent)
+            vt.draw_emphasis_card(draw, narration, keywords, accent, vis_desc)
         elif intent == VisualIntent.INFOGRAPHIC:
-            vt.draw_infographic_card(draw, narration, keywords, accent, primary)
+            vt.draw_infographic_card(draw, narration, keywords, accent, primary, vis_desc)
         elif intent == VisualIntent.CLOSING_CTA:
             channel_name = getattr(self.channel, 'name', '')
             vt.draw_cta_card(draw, accent, primary, channel_name)
