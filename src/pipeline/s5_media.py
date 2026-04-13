@@ -640,13 +640,17 @@ class S5Media(BaseStage):
         secondary = self._hex_to_rgb(getattr(self.channel.visual, 'secondary_color', '#2d4a6f'))
         accent = self._hex_to_rgb(getattr(self.channel.visual, 'accent_color', '#EF233C'))
 
-        # 공통: gradient background
-        for y in range(H):
-            ratio = y / H
-            r = int(primary[0] + (secondary[0] - primary[0]) * ratio)
-            g = int(primary[1] + (secondary[1] - primary[1]) * ratio)
-            b = int(primary[2] + (secondary[2] - primary[2]) * ratio)
-            draw.line([(0, y), (W, y)], fill=(r, g, b))
+        # 공통: 부드러운 gradient background (numpy 방식 — 밴딩 방지)
+        import numpy as np
+        arr = np.zeros((H, W, 3), dtype=np.uint8)
+        for c in range(3):
+            col = np.linspace(primary[c], secondary[c], H, dtype=np.float32)
+            arr[:, :, c] = col.reshape(-1, 1)
+        # 밴딩 방지 미세 노이즈
+        noise = np.random.randint(-2, 3, (H, W, 3), dtype=np.int16)
+        arr = np.clip(arr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        img = Image.fromarray(arr, "RGB")
+        draw = ImageDraw.Draw(img)
 
         narration = getattr(scene, "narration_text", "") or ""
         keywords = getattr(scene, "visual_keywords", []) or []

@@ -40,9 +40,9 @@ providers:
 
 # 비주얼 스타일
 visual:
-  primary_color: "#1B4332"
-  secondary_color: "#D4A574"
-  accent_color: "#E63946"
+  primary_color: "#0F172A"
+  secondary_color: "#1E293B"
+  accent_color: "#3B82F6"
   font_family: "NanumGothicBold"
   thumbnail_template: "finance_default"
   background_style: "gradient_professional"

@@ -224,37 +224,41 @@ def _draw_header_bar(
     W: int,
     title: str,
     accent: tuple,
-    height: int = 80,
+    height: int = 70,
     chip: str = "",
 ) -> None:
-    """상단 색상 헤더 바 — [카테고리 칩] + 실제 제목.
+    """상단 다크 헤더 바 — 왼쪽 accent 세로바 + [카테고리 칩] + 제목.
 
-    chip이 있으면 "[CHIP] 제목" 형태로 렌더링.
-    chip이 없으면 제목만 렌더링.
+    accent 단색 배경 대신 다크 반투명 + 왼쪽 accent 바로 세련된 느낌.
     """
-    draw.rectangle([(0, 0), (W, height)], fill=accent)
+    # 다크 배경
+    draw.rectangle([(0, 0), (W, height)], fill=(10, 15, 30))
+    # 왼쪽 accent 세로 바
+    draw.rectangle([(0, 0), (5, height)], fill=accent)
+    # 하단 분리선
+    draw.line([(0, height), (W, height)], fill=(40, 50, 70), width=1)
 
     if chip:
-        # 칩 배경
-        chip_font = get_korean_font(size=16, bold=True)
+        # 칩 배경 — accent 색상 pill
+        chip_font = get_korean_font(size=14, bold=True)
         chip_bbox = draw.textbbox((0, 0), chip, font=chip_font)
-        chip_w = chip_bbox[2] - chip_bbox[0] + 16
-        chip_h = 26
-        chip_x = 40
+        chip_w = chip_bbox[2] - chip_bbox[0] + 20
+        chip_h = 24
+        chip_x = 24
         chip_y = (height - chip_h) // 2
         draw.rounded_rectangle(
             (chip_x, chip_y, chip_x + chip_w, chip_y + chip_h),
-            radius=4, fill=(255, 255, 255, 60),
+            radius=12, fill=accent,
         )
-        draw.text((chip_x + 8, chip_y + 3), chip, fill="white", font=chip_font)
+        draw.text((chip_x + 10, chip_y + 3), chip, fill="white", font=chip_font)
 
         # 제목 (칩 오른쪽)
         title_x = chip_x + chip_w + 16
-        draw_text_box(draw, title, (title_x, 12, W - 50, height - 10),
-                       max_font_size=34, min_font_size=20, fill="white", max_lines=1)
+        draw_text_box(draw, title, (title_x, 10, W - 50, height - 10),
+                       max_font_size=30, min_font_size=20, fill=(220, 225, 240), max_lines=1)
     else:
-        draw_text_box(draw, title, (50, 12, W - 50, height - 10),
-                       max_font_size=38, min_font_size=24, fill="white", max_lines=1)
+        draw_text_box(draw, title, (24, 10, W - 50, height - 10),
+                       max_font_size=32, min_font_size=22, fill=(220, 225, 240), max_lines=1)
 
 
 # ═══════════════════════════════════════════════════
@@ -378,7 +382,7 @@ def draw_chart_kpi_bar(
     accent: tuple, primary: tuple,
     vis_desc: str = "",
 ) -> None:
-    """Chart 변형 A: narration 숫자 기반 비교 막대 차트."""
+    """Chart 변형 A: 풀와이드 막대 차트 (KPI 카드 제거)."""
     title = derive_scene_title(narration, vis_desc, "chart")
     _draw_header_bar(draw, W, title, accent, chip="DATA")
 
@@ -386,65 +390,65 @@ def draw_chart_kpi_bar(
     years = _extract_years(narration)
     y_unit = _extract_y_unit(narration, keywords)
 
-    # KPI 카드 (우측 상단)
-    kpi_x = W - 380
-    if numbers:
-        _draw_kpi_card(draw, kpi_x, 110, 320, 90,
-                       keywords[0] if keywords else "핵심 수치",
-                       numbers[0], accent, (40, 50, 70))
-    if len(numbers) > 1:
-        _draw_kpi_card(draw, kpi_x, 220, 320, 90,
-                       keywords[1] if len(keywords) > 1 else "비교",
-                       numbers[1], accent, (40, 50, 70))
-
-    # 실제 데이터로 막대 구성
+    # 차트 영역 (전체 너비 활용)
     bars = _build_bar_data(numbers, keywords, years)
     n_bars = max(len(bars), 2)
-    bar_w = min(140, (W - 550) // (n_bars + 1))
+    chart_left = 120
+    chart_right = W - 120
+    chart_area_w = chart_right - chart_left
+    bar_w = min(180, chart_area_w // (n_bars * 2))
     gap = bar_w // 2
-    chart_left = 160
-    bar_y_base = 680
-    total_w = n_bars * (bar_w + gap)
-    start_x = chart_left + (W - 440 - chart_left - total_w) // 2
+    bar_y_base = 650
+    total_w = n_bars * (bar_w + gap) - gap
+    start_x = chart_left + (chart_area_w - total_w) // 2
 
-    # Y축 기준선 + 라벨
+    # Y축 기준선 (점선)
     if bars:
         max_val = max(b[1] for b in bars) or 1
     else:
         max_val = 100
-    for i, gy in enumerate([380, 530, 680]):
-        draw.line([(chart_left - 10, gy), (W - 420, gy)], fill=(70, 80, 100), width=1)
+    for gy in [330, 490, 650]:
+        for dx in range(chart_left, chart_right, 12):
+            draw.line([(dx, gy), (dx + 6, gy)], fill=(40, 50, 70), width=1)
     if y_unit:
-        draw_text_box(draw, f"({y_unit})", (30, 350, chart_left - 15, 375),
-                       max_font_size=14, fill=(150, 155, 170), align="right", max_lines=1)
+        draw_text_box(draw, f"({y_unit})", (30, 300, chart_left - 10, 325),
+                       max_font_size=14, fill=(120, 130, 155), align="right", max_lines=1)
 
-    # 막대 렌더링 — 실제 값에 비례
+    # 막대 렌더링 — 넓은 막대 + accent 색상
+    highlight_color = accent
+    normal_color = (
+        min(accent[0] + 40, 255),
+        min(accent[1] + 40, 255),
+        min(accent[2] + 40, 255),
+    )
     for i, (label, val, highlight) in enumerate(bars[:n_bars]):
         x = start_x + i * (bar_w + gap)
-        bh = int((val / max_val) * 280) if max_val > 0 else 100
-        bh = max(30, min(300, bh))
-        bar_color = accent if highlight else (80, 95, 130)
+        bh = int((val / max_val) * 300) if max_val > 0 else 100
+        bh = max(40, min(320, bh))
+        bar_color = highlight_color if highlight else normal_color
+        # 막대 배경 (약간 투명한 그림자)
+        draw.rounded_rectangle(
+            [(x + 3, bar_y_base - bh + 3), (x + bar_w + 3, bar_y_base + 3)],
+            radius=10, fill=(5, 10, 20),
+        )
+        # 막대 본체
         draw.rounded_rectangle(
             [(x, bar_y_base - bh), (x + bar_w, bar_y_base)],
-            radius=4, fill=bar_color,
+            radius=10, fill=bar_color,
         )
-        # 막대 위 값 표시
+        # 막대 위 값 표시 (큰 텍스트)
         val_text = numbers[i] if i < len(numbers) else f"{val:.0f}"
         draw_text_box(draw, val_text,
-                       (x - 10, bar_y_base - bh - 32, x + bar_w + 10, bar_y_base - bh - 5),
-                       max_font_size=18, fill="white", align="center", max_lines=1)
+                       (x - 15, bar_y_base - bh - 40, x + bar_w + 15, bar_y_base - bh - 5),
+                       max_font_size=26, min_font_size=18, fill="white", align="center", max_lines=1)
         # X축 라벨
         draw_text_box(draw, label,
-                       (x - 10, bar_y_base + 8, x + bar_w + 10, bar_y_base + 38),
-                       max_font_size=15, fill=(170, 175, 190), align="center", max_lines=1)
-
-    # "예시 시각화" 라벨 (실제 데이터가 아님을 명시)
-    _draw_badge(draw, W - 200, SAFE_BOTTOM - 55, "예시 시각화", (140, 140, 150), (45, 55, 70))
+                       (x - 15, bar_y_base + 12, x + bar_w + 15, bar_y_base + 45),
+                       max_font_size=16, min_font_size=12, fill=(150, 160, 180), align="center", max_lines=1)
 
     # 나레이션 요약
-    draw_text_box(draw, narration, (80, 720, W - 80, SAFE_BOTTOM - 30),
-                   max_font_size=22, min_font_size=16, fill=(190, 190, 200), max_lines=3)
-    _draw_footer(draw, W)
+    draw_text_box(draw, narration, (100, 700, W - 100, SAFE_BOTTOM - 20),
+                   max_font_size=21, min_font_size=15, fill=(170, 175, 195), max_lines=3)
 
 
 def draw_chart_kpi_only(
@@ -763,42 +767,57 @@ def draw_emphasis_card(
     accent: tuple,
     vis_desc: str = "",
 ) -> None:
-    """핵심 강조 캡션 — 숫자 + 키워드 + 보조 + 데이터 태그."""
-    # 반투명 오버레이
-    draw.rectangle([(0, 0), (W, H)], fill=(*accent, 30))
-
+    """핵심 강조 캡션 — 중앙 글래시 카드 + accent 숫자 + 키워드."""
     numbers = _extract_numbers(narration)
 
-    # 큰 숫자
-    num_y = 120
-    if numbers:
-        draw_text_box(draw, numbers[0], (100, num_y, W - 100, num_y + 180),
-                       max_font_size=140, min_font_size=60,
-                       fill="white", align="center", max_lines=1)
-        num_y += 200
+    # 중앙 글래시 카드 배경
+    card_x, card_y = 200, 100
+    card_w, card_h = W - 400, SAFE_BOTTOM - 160
+    _draw_rounded_card(
+        draw, (card_x, card_y, card_x + card_w, card_y + card_h),
+        fill=(18, 24, 42), outline=(50, 60, 90), radius=20,
+    )
 
-    # 핵심 키워드
-    key_text = keywords[0] if keywords else narration[:30]
-    draw_text_box(draw, key_text, (100, num_y, W - 100, num_y + 100),
-                   max_font_size=52, min_font_size=28,
+    content_y = card_y + 50
+
+    # 큰 숫자 (accent 색상)
+    if numbers:
+        draw_text_box(draw, numbers[0],
+                       (card_x + 60, content_y, card_x + card_w - 60, content_y + 160),
+                       max_font_size=120, min_font_size=60,
+                       fill=accent, align="center", max_lines=1)
+        content_y += 170
+
+    # 핵심 키워드 (흰색) — 숫자가 아닌 첫 키워드 선택
+    non_num_kw = [k for k in keywords if not re.match(r'^[\d,.%만억원배조]+$', k)]
+    key_text = non_num_kw[0] if non_num_kw else (narration[:40] if not numbers else keywords[0] if keywords else narration[:40])
+    draw_text_box(draw, key_text,
+                   (card_x + 60, content_y, card_x + card_w - 60, content_y + 90),
+                   max_font_size=44, min_font_size=22,
                    fill="white", align="center", max_lines=2)
 
-    # 강조 밑줄
-    draw.rectangle([(W // 4, num_y + 90), (3 * W // 4, num_y + 96)], fill=accent)
+    # accent 밑줄 (짧게, 중앙)
+    line_w = 120
+    line_x = W // 2 - line_w // 2
+    draw.rounded_rectangle(
+        [(line_x, content_y + 95), (line_x + line_w, content_y + 99)],
+        radius=2, fill=accent,
+    )
 
     # 보조 설명
-    draw_text_box(draw, narration, (120, num_y + 130, W - 120, SAFE_BOTTOM - 80),
-                   max_font_size=24, min_font_size=16,
-                   fill=(200, 200, 210), align="center", max_lines=5)
+    draw_text_box(draw, narration,
+                   (card_x + 80, content_y + 130, card_x + card_w - 80, card_y + card_h - 80),
+                   max_font_size=22, min_font_size=15,
+                   fill=(160, 165, 185), align="center", max_lines=5)
 
-    # 데이터 태그 (하단)
+    # 데이터 태그 (카드 하단)
     tags = keywords[:3] if keywords else []
-    tag_x = W // 2 - len(tags) * 80
-    for tag in tags:
-        _draw_badge(draw, tag_x, SAFE_BOTTOM - 60, tag, "white", (*accent, 180))
-        tag_x += 160
-
-    _draw_footer(draw, W)
+    if tags:
+        total_tag_w = len(tags) * 130
+        tag_x = W // 2 - total_tag_w // 2
+        for tag in tags:
+            _draw_badge(draw, tag_x, card_y + card_h - 50, tag, (200, 210, 230), (30, 40, 60))
+            tag_x += 130
 
 
 # ═══════════════════════════════════════════════════

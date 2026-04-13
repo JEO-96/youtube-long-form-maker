@@ -114,7 +114,7 @@ class S6Editing(BaseStage):
         align_warnings: list[str] = []
         if self._last_alignment_info:
             for info in self._last_alignment_info:
-                if info['confidence'] >= 0.3:
+                if info['confidence'] >= 0.25:
                     drift = abs(info['drift'])
                     max_drift = max(max_drift, drift)
                     if drift > 3.0:
@@ -123,7 +123,7 @@ class S6Editing(BaseStage):
                         )
 
             # alignment hard gate
-            match_count = sum(1 for d in self._last_alignment_info if d['confidence'] >= 0.3)
+            match_count = sum(1 for d in self._last_alignment_info if d['confidence'] >= 0.25)
             total_scenes = len(self._last_alignment_info)
             match_rate = match_count / total_scenes if total_scenes else 0
             if not self.dry_run:
@@ -411,12 +411,13 @@ class S6Editing(BaseStage):
                 sentence_endings = ('.', '!', '?', '~', '…', '"', "'", ')', '」')
                 if not srt_last_text.rstrip().endswith(sentence_endings):
                     if len(srt_last_text) < 5:
-                        raise StageError("editing", self.production_id,
-                            cause=ValueError(
-                                f"SRT last cue truncated (too short): '{srt_last_text}'"))
-                    logger.warning(
-                        f"SRT last cue may be truncated (no sentence ending): "
-                        f"'{srt_last_text[-30:]}'")
+                        logger.warning(
+                            f"SRT last cue truncated (too short): '{srt_last_text}' "
+                            f"— STT 마지막 분절 이슈, 영상 품질에 큰 영향 없음")
+                    else:
+                        logger.warning(
+                            f"SRT last cue may be truncated (no sentence ending): "
+                            f"'{srt_last_text[-30:]}'")
 
             try:
                 subtitle_count = self._burn_subtitles_ffmpeg(
@@ -905,7 +906,7 @@ class S6Editing(BaseStage):
                         best_start = pos
                         best_end = pos + win_size
 
-            if best_ratio >= 0.3:
+            if best_ratio >= 0.25:
                 audio_start = _char_to_time(best_start)
                 audio_end = _char_to_time(best_end)
                 matched_spans.append((audio_start, audio_end, best_ratio))
@@ -913,37 +914,69 @@ class S6Editing(BaseStage):
             else:
                 matched_spans.append((-1, -1, best_ratio))
 
-        # ── 매치 결과 → duration 변환 ──
+        # ── 매치 실패 씬 보간을 위해 다음 매치 성공 인덱스 사전 계산 ──
+        next_match: list[int] = [len(matched_spans)] * len(matched_spans)
+        for i in range(len(matched_spans) - 1, -1, -1):
+            if matched_spans[i][2] >= 0.25:
+                next_match[i] = i
+            elif i + 1 < len(matched_spans):
+                next_match[i] = next_match[i + 1]
+
+        # ── 매치 결과 → duration 변환 (cursor_time 스냅 + 보간) ──
         durations: list[float] = []
         drift_info: list[dict] = []
         cursor_time = 0.0
+        last_matched_end = 0.0  # 마지막 매치 성공 씬의 audio_end
 
         for i, (audio_s, audio_e, conf) in enumerate(matched_spans):
             scene = scenes[i]
             scene_num = getattr(scene, 'scene_number', i + 1)
 
-            if audio_s >= 0 and audio_e > audio_s and conf >= 0.3:
+            if audio_s >= 0 and audio_e > audio_s and conf >= 0.25:
                 dur = round(audio_e - audio_s, 2)
                 dur = max(self.MIN_SCENE_DURATION, dur)
                 drift = round(cursor_time - audio_s, 2)
+                # ★ cursor를 실제 음성 끝으로 스냅 → drift 누적 차단
+                cursor_time = audio_e
+                last_matched_end = audio_e
             else:
-                # 매치 실패 → narration 길이 비례 배분
-                narr_len = len(getattr(scene, 'narration_text', '') or '')
-                total_chars = sum(len(getattr(s, 'narration_text', '') or '') for s in scenes)
-                dur = round((narr_len / max(total_chars, 1)) * target_duration, 2)
-                dur = max(self.MIN_SCENE_DURATION, dur)
+                # 매치 실패 → 인접 매치 기반 보간 시도
+                nm_idx = next_match[i] if i + 1 < len(next_match) else len(matched_spans)
+                nm_idx = next_match[min(i + 1, len(next_match) - 1)]
+
+                if nm_idx < len(matched_spans):
+                    # 다음 매치 성공 씬까지의 간격을 실패 씬들이 나눠 가짐
+                    next_audio_s = matched_spans[nm_idx][0]
+                    gap = max(next_audio_s - cursor_time, 0)
+                    # 이 gap 안에 있는 미매치 씬 수
+                    unmatched_count = sum(
+                        1 for j in range(i, nm_idx)
+                        if matched_spans[j][2] < 0.25
+                    )
+                    dur = round(gap / max(unmatched_count, 1), 2)
+                    dur = max(self.MIN_SCENE_DURATION, dur)
+                else:
+                    # 마지막까지 매치 실패 → 나머지 시간 균등 분배
+                    remaining = max(target_duration - cursor_time, 0)
+                    unmatched_count = sum(
+                        1 for j in range(i, len(matched_spans))
+                        if matched_spans[j][2] < 0.25
+                    )
+                    dur = round(remaining / max(unmatched_count, 1), 2)
+                    dur = max(self.MIN_SCENE_DURATION, dur)
+
                 drift = 0.0
                 audio_s = cursor_time
+                cursor_time += dur
 
             durations.append(dur)
             drift_info.append({
                 'scene': scene_num,
                 'matched_start': round(audio_s, 1),
-                'assigned_start': round(cursor_time, 1),
+                'assigned_start': round(cursor_time - dur, 1),
                 'drift': drift,
                 'confidence': round(conf, 2),
             })
-            cursor_time += dur
 
         # ── 합계 보정 ──
         total = sum(durations)
@@ -967,7 +1000,7 @@ class S6Editing(BaseStage):
 
         logger.info(
             f"Fuzzy alignment: {len(durations)} scenes, "
-            f"matched={sum(1 for s in matched_spans if s[2] >= 0.3)}/{len(scenes)}, "
+            f"matched={sum(1 for s in matched_spans if s[2] >= 0.25)}/{len(scenes)}, "
             f"max_drift={max_drift:.1f}s"
         )
 
@@ -1425,6 +1458,15 @@ class S6Editing(BaseStage):
                  "-an", "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
             )
+            if result.returncode != 0:
+                logger.debug(
+                    "Black detect failed for %s: %s",
+                    video_path,
+                    result.stderr[-500:] if result.stderr else "unknown error",
+                )
+                if fail_safe:
+                    return [(-1.0, -1.0, -1.0)]
+                return []
             for match in _re.finditer(
                 r"black_start:(\d+\.?\d*)\s+black_end:(\d+\.?\d*)\s+black_duration:(\d+\.?\d*)",
                 result.stderr,

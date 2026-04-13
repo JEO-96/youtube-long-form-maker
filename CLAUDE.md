@@ -159,33 +159,38 @@ class VisualIntent(str, Enum):
 - `_build_gpt_image_prompt()`: intent별 구도/레이아웃 지시 (chart=차트, checklist=체크박스 등)
 - Failover: OpenAI GPT Image → 간소화 프롬프트 → Pillow fallback
 - Pillow fallback도 intent별 전용 디자인 (차트/체크리스트/비교카드/강조캡션 등)
+- **그라데이션 배경**: numpy 배열 + 미세 노이즈로 밴딩 없는 부드러운 배경 생성
 - `SceneFailureRecord`로 각 씬의 실패 원인을 구조화하여 기록 (provider, http_status, fallback 여부 등)
 
 ### S6 편집 — ffmpeg 네이티브 + 씬-나레이션 싱크 정렬 + 품질 게이트
 
 - ffmpeg concat demuxer + subtitles 필터로 합성 (MoviePy 제거)
-- **씬-나레이션 싱크 정렬**: 각 씬의 이미지 표시 시간을 나레이션 타이밍에 정렬
-  - `alignment_max_drift`: 최대 드리프트 (초) 추적
+- **씬-나레이션 싱크 정렬**: fuzzy match로 scene.narration_text를 voice segments에 매칭
+  - **cursor_time 스냅**: 매치 성공 시 cursor를 audio_end로 리셋하여 drift 누적 차단
+  - **인접 매치 보간**: 매치 실패 씬은 이전/다음 매치 성공 씬 사이 간격으로 보간
+  - fuzzy match 임계값: 0.25 (한국어 STT 구두점/조사 차이 허용)
+  - `alignment_max_drift`: 최대 드리프트 (초) 추적 — 목표 < 1.5s
   - `alignment_warnings`: drift > 3s인 씬 목록 기록
-  - hard gate: 드리프트 기준 초과 시 경고/실패 처리
 - **blackdetect 품질 게이트**: ffmpeg `blackdetect` 필터로 1초 이상 검은 프레임 탐지
 - `scene_relevance_report.json` 생성: 각 씬의 narration-visual 매핑을 검수용으로 기록
 - 품질 게이트: 최종 영상 길이 >= 오디오의 80%
 
 ## 비주얼 템플릿 시스템 (`src/core/visual_templates.py`)
 
-Pillow 기반 고품질 씬 이미지 카드 렌더링. GPT Image 실패 시 fallback으로 사용.
+Pillow 기반 다크 모던 스타일 씬 이미지 카드 렌더링. GPT Image 실패 시 fallback으로 사용.
 
 - **표준 캔버스**: 1920x1080, 하단 180px 자막 안전영역 (`SUBTITLE_SAFE_MARGIN`)
+- **다크 블루 팔레트**: 채널별 primary/secondary/accent 3색 시스템 (finance: #0F172A/#1E293B/#3B82F6)
 - **텍스트 렌더링**: `src/core/text_render.py`의 `draw_text_box()` — 픽셀 기반 줄바꿈 + 박스 클리핑
+- **헤더 바**: 다크 배경 + 왼쪽 accent 세로바(5px) + pill shape 카테고리 칩
 - **intent별 전용 렌더 함수**:
-  - `draw_chart_kpi_bar()` — KPI 카드 + 막대 차트
+  - `draw_chart_kpi_bar()` — 풀와이드 막대 차트 (그림자 + 둥근 모서리)
   - `draw_chart_kpi_only()` — KPI 카드 단독
   - `draw_chart_line()` — 라인 차트
   - `draw_chart_gauge()` — 게이지 차트
   - `draw_comparison_card()` — A vs B 비교 카드
   - `draw_checklist_card()` — 체크리스트 카드
-  - `draw_emphasis_card()` — 핵심 문장 풀스크린
+  - `draw_emphasis_card()` — 글래시 카드 + accent 숫자 (전체 오버레이 아님)
   - `draw_infographic_card()` — 인포그래픽
   - `draw_cta_card()` — 엔딩 CTA 카드
 - `derive_scene_title()`: 씬 나레이션에서 타이틀 + 카테고리 칩 자동 추출
@@ -266,4 +271,5 @@ asyncio.run(test())
 - `scene_relevance_report.json`으로 영상 제작 후 장면 관련도 검수 가능
 - 비주얼 템플릿 수정 시 `SUBTITLE_SAFE_MARGIN`(180px) 하단 안전영역 준수 필수
 - `visual_templates.py`에서 narration 텍스트는 반드시 `draw_text_box()` 사용 (substring 금지)
-- S6의 alignment drift 경고가 3초 초과 시 씬 타이밍 조정 필요
+- S6 alignment drift 목표: max_drift < 1.5s, matched rate > 90%
+- S6의 fuzzy match 임계값(0.25) 수정 시 매치율과 오탐 균형 고려 필요
