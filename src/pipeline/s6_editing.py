@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import shutil
 from pathlib import Path
@@ -292,9 +293,17 @@ class S6Editing(BaseStage):
                         scene_dur, w, h, cumulative_start,
                     )
                     if enhanced_path.exists() and enhanced_path.stat().st_size > 0:
-                        clip_path.unlink(missing_ok=True)
-                        enhanced_path.rename(clip_path)
-                        self._last_pi_success_count += len(pi_events)
+                        # PI 적용 후 blackdetect hard gate
+                        blacks = self._detect_black_frames(enhanced_path, min_duration=1.0)
+                        if blacks:
+                            logger.warning(
+                                f"PI blackdetect: scene {i+1} has {len(blacks)} "
+                                f"black segment(s) after PI — reverting to original")
+                            enhanced_path.unlink(missing_ok=True)
+                        else:
+                            clip_path.unlink(missing_ok=True)
+                            enhanced_path.rename(clip_path)
+                            self._last_pi_success_count += len(pi_events)
                     else:
                         logger.warning(f"PI effect produced empty output for scene {i+1}")
                 except Exception as e:
@@ -383,10 +392,32 @@ class S6Editing(BaseStage):
         else:
             shutil.move(str(no_audio_path), str(no_sub_path))
 
-        # ═══ Step 6: SRT 자막 번인 ═══
+        # ═══ Step 6: SRT 품질 게이트 + 자막 번인 ═══
         subtitle_count = 0
         srt_path = Path(voice.srt_path) if voice.srt_path else None
         if srt_path and srt_path.exists():
+            # SRT-오디오 duration 불일치 검증
+            srt_end, srt_last_text = self._parse_srt_last_cue(srt_path)
+            if srt_end > 0 and not self.dry_run:
+                srt_gap = abs(srt_end - target_duration)
+                if srt_gap > 5.0:
+                    raise StageError("editing", self.production_id,
+                        cause=ValueError(
+                            f"SRT-audio duration mismatch: SRT ends at {srt_end:.1f}s, "
+                            f"audio={target_duration:.1f}s (gap={srt_gap:.1f}s > 5s)"))
+
+            # SRT 마지막 cue 문장 절단 검증
+            if srt_last_text and not self.dry_run:
+                sentence_endings = ('.', '!', '?', '~', '…', '"', "'", ')', '」')
+                if not srt_last_text.rstrip().endswith(sentence_endings):
+                    if len(srt_last_text) < 5:
+                        raise StageError("editing", self.production_id,
+                            cause=ValueError(
+                                f"SRT last cue truncated (too short): '{srt_last_text}'"))
+                    logger.warning(
+                        f"SRT last cue may be truncated (no sentence ending): "
+                        f"'{srt_last_text[-30:]}'")
+
             try:
                 subtitle_count = self._burn_subtitles_ffmpeg(
                     no_sub_path, srt_path, output_path,
@@ -574,16 +605,30 @@ class S6Editing(BaseStage):
             "Alignment=2,BorderStyle=3"
         )
 
-        self._run_ffmpeg([
-            "-i", str(video_path),
-            "-vf", f"subtitles='{srt_escaped}':force_style='{style}'",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-            "-c:a", "copy",
-            str(output_path),
-        ], "subtitles", timeout=300)
+        # temp 파일에 먼저 쓰고, 검증 후 교체 (moov atom 보호)
+        tmp_output = output_path.with_suffix(".tmp.mp4")
+        try:
+            self._run_ffmpeg([
+                "-i", str(video_path),
+                "-vf", f"subtitles='{srt_escaped}':force_style='{style}'",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                "-c:a", "copy",
+                str(tmp_output),
+            ], "subtitles", timeout=300)
 
-        # wrap된 SRT 정리
-        wrapped_srt_path.unlink(missing_ok=True)
+            # ffprobe로 moov atom / duration 검증
+            tmp_dur = self._ffprobe_duration(tmp_output)
+            if tmp_dur <= 0:
+                raise RuntimeError(
+                    f"Subtitle burn-in produced invalid file (duration={tmp_dur})")
+
+            os.replace(str(tmp_output), str(output_path))
+        except Exception:
+            tmp_output.unlink(missing_ok=True)
+            raise
+        finally:
+            # wrap된 SRT 정리
+            wrapped_srt_path.unlink(missing_ok=True)
 
         logger.info(f"ffmpeg 자막 번인 완료: {subtitle_count}개 자막")
         return subtitle_count
@@ -1268,7 +1313,7 @@ class S6Editing(BaseStage):
         MVP 구현:
         - ZOOM: 1.0→1.15 줌인 후 복귀 (0.8초)
         - SUBTITLE_EMPHASIS: 화면 하단에 강조 플래시 (0.5초 밝기 부스트)
-        - SCENE_CHANGE: 0.3초 페이드인 (이미 씬 전환이므로 가벼운 효과)
+        - SCENE_CHANGE: 0.3초 밝기 펄스 (가벼운 전환 강조)
         - SFX_HIT: 0.2초 밝기 펄스 (효과음은 별도 오디오 믹싱 필요)
         """
         from ..retention.pattern_interrupt import InterruptType
@@ -1295,7 +1340,12 @@ class S6Editing(BaseStage):
                 )
 
             elif evt.interrupt_type == InterruptType.SCENE_CHANGE:
-                filters.append(f"fade=in:st={t_s}:d=0.3")
+                # fade=in은 0→st 구간을 black으로 만들므로 사용 금지.
+                # 대신 짧은 밝기 펄스로 전환 강조.
+                t_e = round(min(local_t + 0.3, scene_dur), 2)
+                filters.append(
+                    f"eq=brightness=0.04:enable='between(t,{t_s},{t_e})'"
+                )
 
             elif evt.interrupt_type == InterruptType.SUBTITLE_EMPHASIS:
                 t_e = round(min(local_t + 0.5, scene_dur), 2)
@@ -1328,13 +1378,43 @@ class S6Editing(BaseStage):
     # Optional Enhancers (기존 유지)
     # ═══════════════════════════════════════════════════
 
-    def _warn_black_frames(self, video_path: Path) -> None:
-        """합성 영상에서 1초+ 검은 구간 감지 시 경고 로그."""
+    def _parse_srt_last_cue(self, srt_path: Path) -> tuple[float, str]:
+        """SRT 파일의 마지막 cue end_time(초)과 텍스트를 반환."""
+        import re
+        content = srt_path.read_text(encoding="utf-8")
+        blocks = [b.strip() for b in re.split(r"\n\n+", content.strip()) if b.strip()]
+        if not blocks:
+            return 0.0, ""
+
+        last_block = blocks[-1]
+        lines = last_block.split("\n")
+        if len(lines) < 3:
+            return 0.0, ""
+
+        # 타임코드 파싱: "HH:MM:SS,mmm --> HH:MM:SS,mmm"
+        tc_match = re.match(
+            r"\d+:\d+:\d+[,.]\d+\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)",
+            lines[1],
+        )
+        if not tc_match:
+            return 0.0, ""
+
+        h, m, s, ms = (int(tc_match.group(i)) for i in range(1, 5))
+        end_sec = h * 3600 + m * 60 + s + ms / 1000.0
+        text = " ".join(lines[2:]).strip()
+        return end_sec, text
+
+    def _detect_black_frames(self, video_path: Path, min_duration: float = 1.0) -> list[tuple[float, float, float]]:
+        """영상에서 검은 구간을 감지하여 (start, end, duration) 리스트 반환.
+
+        감지 실패 시 빈 리스트 반환 (안전 모드).
+        """
         import re as _re
+        blacks: list[tuple[float, float, float]] = []
         try:
             result = subprocess.run(
                 ["ffmpeg", "-i", str(video_path),
-                 "-vf", "blackdetect=d=1.0:pix_th=0.10",
+                 "-vf", f"blackdetect=d={min_duration}:pix_th=0.10",
                  "-an", "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
             )
@@ -1343,12 +1423,16 @@ class S6Editing(BaseStage):
                 result.stderr,
             ):
                 start, end, dur = float(match.group(1)), float(match.group(2)), float(match.group(3))
-                if dur >= 1.0:
-                    logger.warning(
-                        f"BLACKDETECT: {dur:.1f}s black at {start:.1f}-{end:.1f}s"
-                    )
+                if dur >= min_duration:
+                    blacks.append((start, end, dur))
         except Exception as e:
             logger.debug(f"Black detect skipped: {e}")
+        return blacks
+
+    def _warn_black_frames(self, video_path: Path) -> None:
+        """합성 영상에서 1초+ 검은 구간 감지 시 경고 로그."""
+        for start, end, dur in self._detect_black_frames(video_path):
+            logger.warning(f"BLACKDETECT: {dur:.1f}s black at {start:.1f}-{end:.1f}s")
 
     async def _apply_enhancers(
         self, output: Path, applied_effects: list[str]
