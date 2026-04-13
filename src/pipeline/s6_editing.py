@@ -293,8 +293,8 @@ class S6Editing(BaseStage):
                         scene_dur, w, h, cumulative_start,
                     )
                     if enhanced_path.exists() and enhanced_path.stat().st_size > 0:
-                        # PI 적용 후 blackdetect hard gate
-                        blacks = self._detect_black_frames(enhanced_path, min_duration=1.0)
+                        # PI 적용 후 blackdetect hard gate (검증 실패 시에도 원본 유지)
+                        blacks = self._detect_black_frames(enhanced_path, min_duration=1.0, fail_safe=True)
                         if blacks:
                             logger.warning(
                                 f"PI blackdetect: scene {i+1} has {len(blacks)} "
@@ -424,7 +424,10 @@ class S6Editing(BaseStage):
                 )
                 no_sub_path.unlink(missing_ok=True)
             except Exception as e:
-                logger.warning(f"ffmpeg 자막 번인 실패: {e}, 자막 없이 진행")
+                if not self.dry_run:
+                    raise StageError("editing", self.production_id,
+                        cause=RuntimeError(f"자막 burn-in 실패: {e}")) from e
+                logger.warning(f"ffmpeg 자막 번인 실패 (dry_run): {e}, 자막 없이 진행")
                 shutil.move(str(no_sub_path), str(output_path))
         else:
             shutil.move(str(no_sub_path), str(output_path))
@@ -1404,10 +1407,14 @@ class S6Editing(BaseStage):
         text = " ".join(lines[2:]).strip()
         return end_sec, text
 
-    def _detect_black_frames(self, video_path: Path, min_duration: float = 1.0) -> list[tuple[float, float, float]]:
+    def _detect_black_frames(
+        self, video_path: Path, min_duration: float = 1.0, *, fail_safe: bool = False,
+    ) -> list[tuple[float, float, float]]:
         """영상에서 검은 구간을 감지하여 (start, end, duration) 리스트 반환.
 
-        감지 실패 시 빈 리스트 반환 (안전 모드).
+        fail_safe=True면 ffmpeg 실패 시 sentinel [(-1,-1,-1)] 반환하여
+        호출부가 "검증 불가 → 원본 유지" 판단 가능.
+        fail_safe=False면 빈 리스트 반환 (기존 soft warning 용도).
         """
         import re as _re
         blacks: list[tuple[float, float, float]] = []
@@ -1427,6 +1434,8 @@ class S6Editing(BaseStage):
                     blacks.append((start, end, dur))
         except Exception as e:
             logger.debug(f"Black detect skipped: {e}")
+            if fail_safe:
+                return [(-1.0, -1.0, -1.0)]
         return blacks
 
     def _warn_black_frames(self, video_path: Path) -> None:
