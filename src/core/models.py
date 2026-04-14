@@ -31,6 +31,16 @@ class ProductionStatus(str, Enum):
     FAILED = "failed"
 
 
+class ProductionFormat(str, Enum):
+    """영상 포맷 — 롱폼 vs 쇼츠.
+
+    채널 config의 content.format에서 지정하며, 각 파이프라인 스테이지가
+    이 값에 따라 분기 동작한다 (씬 수, 해상도, 프롬프트 등).
+    """
+    LONGFORM = "longform"  # 기본 롱폼 (10분, 16:9, 40+ 씬)
+    SHORTS = "shorts"      # YouTube Shorts (~55초, 9:16, 10~12 씬)
+
+
 class MediaType(str, Enum):
     AI_IMAGE = "ai_image"
     AI_VIDEO = "ai_video"
@@ -156,6 +166,7 @@ class Scene(BaseModel):
     transition: TransitionType = TransitionType.CUT
     is_hook: bool = False  # 첫 5초 Hook 씬
     visual_keywords: list[str] = []  # 화면에 팝업할 키워드
+    visual_cue: str = ""  # 배경 생성용 내부 시각 단서 (텍스트 렌더링에는 사용하지 않음)
 
 
 class StoryboardResult(BaseModel):
@@ -188,12 +199,12 @@ class SceneFailureRecord(BaseModel):
     http_status: int | None = None   # HTTP 상태 코드 (있을 경우)
     error_message: str = ""          # 핵심 에러 메시지
     detail: str = ""                 # response body 또는 connect/timeout 상세
-    fallback_used: bool = False      # fallback 이미지로 대체했는지
+    fallback_used: bool = False      # 외부/고품질 대체 자산으로 대체했는지
     fallback_path: str = ""          # fallback 파일 경로
     # ═══ failover 추적 필드 ═══
     provider_attempts: list[str] = []    # 시도한 provider 순서 ["flux", "flux_retry", "openai", ...]
-    final_provider: str = ""             # 최종 성공 provider 또는 "fallback_pillow"
-    failure_stage: str = ""              # "first_try" | "retry" | "failover" | "fallback"
+    final_provider: str = ""             # 최종 성공 provider
+    failure_stage: str = ""              # "first_try" | "retry" | "failover"
     network_related: bool = False        # 네트워크 연결 실패 여부
     human_summary: str = ""              # 사람이 바로 읽을 수 있는 요약
 

@@ -32,6 +32,11 @@ content:
   target_duration_minutes: 12
   hook_style: "shocking_statistic"  # "지난달 이 지역 거래량이 300% 폭증했습니다"
   cta_style: "subscribe_and_next"
+  # ═══ 쇼츠 전환 (2026-04) ═══
+  format: "shorts"                  # longform | shorts
+  target_duration_seconds: 55       # YouTube Shorts < 60s
+  max_scenes: 12                    # 씬 수 제한
+  max_script_words: 170             # 한국어 기준 약 55초
 
 # AI 프로바이더 선택
 providers:

@@ -45,6 +45,11 @@ content:
   target_duration_minutes: 10
   hook_style: "question"           # "혹시 이렇게 하고 계신가요?"
   cta_style: "subscribe_and_next"
+  # ═══ 쇼츠 전환 (2026-04) ═══
+  format: "shorts"                 # longform | shorts
+  target_duration_seconds: 55      # YouTube Shorts < 60s
+  max_scenes: 12                   # 씬 수 제한
+  max_script_words: 170            # 한국어 기준 약 55초
 
 # AI 프로바이더 선택
 providers:

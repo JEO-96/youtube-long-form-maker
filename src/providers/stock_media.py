@@ -35,6 +35,8 @@ class PexelsStockMedia(StockMediaProvider):
         self.min_duration = pexels_cfg.get("min_duration", 5)
         self.orientation = pexels_cfg.get("orientation", "landscape")
         self.per_page = pexels_cfg.get("per_page", 10)
+        # 동일 production 내에서 사용된 video_id 추적 (중복 방지)
+        self._used_video_ids: set[int] = set()
 
     @retry(max_attempts=3, base_delay=2.0)
     async def search_videos(
@@ -73,9 +75,16 @@ class PexelsStockMedia(StockMediaProvider):
 
         data = resp.json()
         videos = []
+        skipped_dup = 0
         for v in data.get("videos", []):
             duration = v.get("duration", 0)
             if duration < min_duration:
+                continue
+
+            video_id = v.get("id", 0)
+            # 이미 사용된 video는 스킵 (중복 방지)
+            if video_id and video_id in self._used_video_ids:
+                skipped_dup += 1
                 continue
 
             # 최고 품질 비디오 파일 선택
@@ -84,7 +93,7 @@ class PexelsStockMedia(StockMediaProvider):
                 continue
 
             videos.append({
-                "id": v.get("id"),
+                "id": video_id,
                 "url": best_file["link"],
                 "duration": duration,
                 "width": best_file.get("width", 0),
@@ -94,7 +103,27 @@ class PexelsStockMedia(StockMediaProvider):
                 "pexels_url": v.get("url", ""),
             })
 
-        logger.info(f"Pexels search: '{query}' → {len(videos)} results (filtered from {len(data.get('videos', []))})")
+        # 사용됨 마킹 (호출자가 첫 결과를 쓴다고 가정)
+        if videos and videos[0].get("id"):
+            self._used_video_ids.add(videos[0]["id"])
+
+        if skipped_dup > 0:
+            logger.info(
+                f"Pexels search: '{query}' → {len(videos)} results "
+                f"(skipped {skipped_dup} duplicates from same production)"
+            )
+        else:
+            logger.info(
+                f"Pexels search: '{query}' → {len(videos)} results "
+                f"(filtered from {len(data.get('videos', []))})"
+            )
+
+        if not videos and skipped_dup > 0:
+            logger.warning(
+                f"Pexels: all results for '{query}' were already used — "
+                "consider increasing per_page or using more specific queries"
+            )
+
         return videos
 
     @retry(max_attempts=3, base_delay=2.0)

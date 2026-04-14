@@ -54,7 +54,11 @@ class VideoConfig(BaseModel):
 class MediaGenerationConfig(BaseModel):
     concurrency_limit: int = 3       # 기본 3, 최��� 6까지 설정 가능
     stock_mix_ratio: float = 0.2
-    prefer_local_render: bool = True  # chart/card/checklist 등 Pillow 로컬 렌더 우선
+    prefer_local_render: bool = False  # 저품질 Pillow 도형 렌더 비활성화
+    render_text_in_background: bool = False  # 배경 이미지에는 자막과 중복되는 글자/숫자를 넣지 않음
+    split_visual_beats: bool = True   # 짧은 멘트 단위로 배경 전환용 씬을 더 잘게 분해
+    visual_beat_max_chars: int = 220  # visual beat 1개당 권장 최대 글자 수
+    prefer_consistent_textless_backgrounds: bool = False  # 로컬 도형 배경 사용 금지
 
 
 # ═══ Retention 설정 ═══
@@ -141,6 +145,16 @@ class ChannelContent(BaseModel):
     target_duration_minutes: int = 10
     hook_style: str = "shocking_statistic"
     cta_style: str = "subscribe_and_next"
+
+    # ═══ 포맷 스위치 (longform | shorts) ═══
+    format: str = "longform"              # "longform" | "shorts"
+    target_duration_seconds: int = 55     # shorts: 목표 길이 (YouTube Shorts <60s)
+    max_scenes: int = 0                   # shorts: 최대 씬 수 (0=무제한)
+    max_script_words: int = 0             # shorts: 스크립트 최대 단어 수 (0=무제한)
+
+    @property
+    def is_shorts(self) -> bool:
+        return self.format == "shorts"
 
 
 class ChannelProviders(BaseModel):

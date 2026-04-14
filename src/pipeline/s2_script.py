@@ -47,6 +47,8 @@ class S2Script(BaseStage):
         benchmark = BenchmarkResult(**benchmark_data)
 
         if self.dry_run:
+            if self.channel.content.is_shorts:
+                return self._mock_shorts_result(benchmark)
             return self._mock_result(benchmark)
 
         # 채널 설정 기반 LLM 선택 (기본: claude)
@@ -55,28 +57,56 @@ class S2Script(BaseStage):
         llm = create_llm(self.channel.providers.llm, fallback="claude")
 
         target_duration = getattr(self.channel.content, 'target_duration_minutes', 10) if hasattr(self.channel, 'content') else 10
+        is_shorts = getattr(self.channel.content, 'is_shorts', False) if hasattr(self.channel, 'content') else False
 
         # Jinja2 템플릿 기반 시스템 프롬프트 (채널 DNA + safety_policy 반영)
-        system_prompt = render_prompt(
-            "script_body.j2",
-            channel_name=self.channel.channel_name,
-            tone=self.channel.tone,
-            target_audience=self.channel.target_audience,
-            narrative_style=self.channel.identity.narrative_style,
-            recurring_pattern=getattr(self.channel.identity, 'recurring_pattern', ''),
-            forbidden_topics=getattr(self.channel.identity, 'forbidden_topics', []),
-            hook_style=getattr(self.channel.content, 'hook_style', 'question') if hasattr(self.channel, 'content') else 'question',
-            cta_style=getattr(self.channel.content, 'cta_style', 'subscribe_and_next') if hasattr(self.channel, 'content') else 'subscribe_and_next',
-            safety_policy=getattr(self.channel, 'safety_policy', None),
-            topic=benchmark.topic,
-            keywords=benchmark.keywords,
-            suggested_angle=benchmark.suggested_angle,
-            content_gaps=benchmark.content_gaps,
-            target_duration=target_duration,
-        )
+        if is_shorts:
+            target_seconds = getattr(self.channel.content, 'target_duration_seconds', 55)
+            max_words = getattr(self.channel.content, 'max_script_words', 170) or 170
+            system_prompt = render_prompt(
+                "script_shorts.j2",
+                channel_name=self.channel.channel_name,
+                tone=self.channel.tone,
+                target_audience=self.channel.target_audience,
+                narrative_style=self.channel.identity.narrative_style,
+                recurring_pattern=getattr(self.channel.identity, 'recurring_pattern', ''),
+                forbidden_topics=getattr(self.channel.identity, 'forbidden_topics', []),
+                hook_style=getattr(self.channel.content, 'hook_style', 'shocking_statistic'),
+                cta_style=getattr(self.channel.content, 'cta_style', 'subscribe_and_next'),
+                safety_policy=getattr(self.channel, 'safety_policy', None),
+                topic=benchmark.topic,
+                keywords=benchmark.keywords,
+                suggested_angle=benchmark.suggested_angle,
+                content_gaps=benchmark.content_gaps,
+                target_duration_seconds=target_seconds,
+                max_script_words=max_words,
+            )
+        else:
+            system_prompt = render_prompt(
+                "script_body.j2",
+                channel_name=self.channel.channel_name,
+                tone=self.channel.tone,
+                target_audience=self.channel.target_audience,
+                narrative_style=self.channel.identity.narrative_style,
+                recurring_pattern=getattr(self.channel.identity, 'recurring_pattern', ''),
+                forbidden_topics=getattr(self.channel.identity, 'forbidden_topics', []),
+                hook_style=getattr(self.channel.content, 'hook_style', 'question') if hasattr(self.channel, 'content') else 'question',
+                cta_style=getattr(self.channel.content, 'cta_style', 'subscribe_and_next') if hasattr(self.channel, 'content') else 'subscribe_and_next',
+                safety_policy=getattr(self.channel, 'safety_policy', None),
+                topic=benchmark.topic,
+                keywords=benchmark.keywords,
+                suggested_angle=benchmark.suggested_angle,
+                content_gaps=benchmark.content_gaps,
+                target_duration=target_duration,
+            )
         # 렌더링 실패 시 fallback
         if "Template" in system_prompt and "not found" in system_prompt:
             system_prompt = SCRIPT_SYSTEM_PROMPT_FALLBACK
+
+        if is_shorts:
+            duration_phrase = f"{getattr(self.channel.content, 'target_duration_seconds', 55)}초 분량 YouTube Shorts 대본"
+        else:
+            duration_phrase = f"{target_duration}분 분량 YouTube 대본"
 
         prompt = (
             f"벤치마크 분석 결과:\n"
@@ -89,7 +119,7 @@ class S2Script(BaseStage):
             f"- 톤: {self.channel.tone}\n"
             f"- 타겟: {self.channel.target_audience}\n"
             f"- 내러티브 스타일: {self.channel.identity.narrative_style}\n\n"
-            f"위 정보를 바탕으로 {target_duration}분 분량 YouTube 대본을 JSON으로 작성하세요."
+            f"위 정보를 바탕으로 {duration_phrase}을 JSON으로 작성하세요."
         )
 
         provider_name = self.channel.providers.llm
@@ -215,4 +245,36 @@ class S2Script(BaseStage):
             full_text=full_text,
             word_count=len(full_text.split()),
             estimated_duration_seconds=600,
+        )
+
+    @staticmethod
+    def _mock_shorts_result(benchmark: BenchmarkResult) -> ScriptResult:
+        """쇼츠용 mock 대본 — 170단어 / 55초 / 훅-본문-CTA 구조."""
+        topic = benchmark.topic
+        hook = f"월급 70%가 사라지는 이유, 통장 하나 차이였습니다."
+        body = (
+            f"{topic}의 핵심은 통장 쪼개기입니다. "
+            f"월급 통장 하나로 다 쓰면 한 달에 평균 34% 더 새어 나갑니다. "
+            f"첫 번째, 월급 통장. 두 번째, 고정비 통장. "
+            f"세 번째, 저축 통장. 네 번째, 비상금 CMA. "
+            f"네 개로만 나눠도 6개월 뒤 잔고가 달라집니다."
+        )
+        cta = "더 자세한 전략은 다음 영상에서. 구독과 좋아요 부탁드려요!"
+        section = ScriptSection(
+            header="통장 4개 쪼개기",
+            body=body,
+            visual_prompt="통장 4개 분할 인포그래픽",
+            estimated_duration_seconds=45,
+        )
+        full_text = f"{hook}\n{body}\n{cta}"
+        return ScriptResult(
+            title=f"{topic} - 월급 70% 지키는 법 #shorts",
+            hook=hook,
+            intro="",
+            sections=[section],
+            cta=cta,
+            outro="",
+            full_text=full_text,
+            word_count=len(full_text.split()),
+            estimated_duration_seconds=55.0,
         )
