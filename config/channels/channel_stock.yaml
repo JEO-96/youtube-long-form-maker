@@ -1,0 +1,86 @@
+# ═══ 주식/증시 분석 채널 설정 ═══
+
+channel:
+  id: "stock"
+  name: "주식 시그널"
+  niche: "stock_market"
+  language: "ko"
+  tone: "데이터 기반, 냉철하면서 빠른 전개"
+  target_audience: "30-40대 직장인 투자자"
+
+# 채널 DNA
+identity:
+  unique_angle: "감이 아닌 데이터와 시장 흐름으로 읽는 주식 시그널"
+  narrative_style: "시장 이슈 포착 → 데이터 분석 → 투자자 판단 기준 제시"
+  forbidden_topics:
+    - "특정 종목 매수/매도 추천"
+    - "확정 수익률 보장"
+    - "리딩방/유료 종목 추천"
+    - "미공개 정보 기반 분석"
+    - "선물/옵션 레버리지 권유"
+  recurring_pattern: "3단 구조: 이 시그널 보이시나요 → 데이터가 말하는 것 → 어떻게 판단할지"
+
+content:
+  preferred_topics:
+    - "코스피/코스닥 시장 분석"
+    - "섹터별 수급 동향"
+    - "금리/환율과 주식시장"
+    - "실적 시즌 분석"
+    - "AI/반도체 테마주 동향"
+    - "ETF 비교 분석"
+    - "외국인/기관 매매 동향"
+    - "미국 증시 영향 분석"
+    - "배당주 전략"
+    - "IPO/공모주 분석"
+  target_duration_minutes: 10
+  hook_style: "shocking_statistic"  # "어제 외국인이 코스피에서 3천억을 빼갔습니다"
+  cta_style: "subscribe_and_next"
+  # ═══ 쇼츠 전환 (2026-04) ═══
+  format: "shorts"                  # longform | shorts
+  target_duration_seconds: 55       # YouTube Shorts < 60s
+  max_scenes: 12                    # 씬 수 제한
+  max_script_words: 170             # 한국어 기준 약 55초
+
+# AI 프로바이더 선택
+providers:
+  llm: "claude"
+  tts: "elevenlabs"
+  voice_id: "${ELEVENLABS_VOICE_ID_STOCK}"
+  image_gen: "openai"
+  video_gen: "grok"
+
+# 비주얼 스타일 — 증시 다크 테마 (빨강/초록 강세/약세 컬러)
+visual:
+  primary_color: "#0A0E17"
+  secondary_color: "#141B2D"
+  accent_color: "#EF4444"
+  font_family: "NanumGothicBold"
+  thumbnail_template: "stock_default"
+  background_style: "gradient_dark_finance"
+
+# 업로드 설정
+upload:
+  category_id: "22"       # People & Blogs
+  default_tags:
+    - "주식"
+    - "증시"
+    - "코스피"
+    - "주식분석"
+    - "테마주"
+    - "ETF"
+    - "주식투자"
+    - "시장분석"
+    - "외국인매매"
+  privacy: "private"
+
+# 브랜딩 노출 정책
+branding:
+  show_in_video: false
+  show_in_fallback: false
+  show_in_thumbnail: true
+  show_in_ending: true
+  position: "bottom_bar"
+
+# A/B 테스팅
+ab_test:
+  group: "default"
