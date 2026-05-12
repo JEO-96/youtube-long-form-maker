@@ -20,7 +20,11 @@ video:
 media_generation:
   concurrency_limit: 5  # asyncio.Semaphore (3→5, 최대 6)
   stock_mix_ratio: 0.2  # 20% 스톡 영상 혼합
-  prefer_local_render: true  # chart/card/checklist → Pillow 로컬 렌더 우선 (API 호출 절약)
+  prefer_local_render: false  # 저품질 Pillow 도형 렌더 비활성화: 스톡/AI 이미지 사용
+  render_text_in_background: false  # 자막과 중복되는 배경 내 글자/숫자 렌더 금지
+  split_visual_beats: true  # 멘트 단위로 배경이 더 자주 맞춰 바뀌도록 씬 세분화
+  visual_beat_max_chars: 220  # 과도한 전환 방지를 위해 visual beat를 너무 잘게 쪼개지 않음
+  prefer_consistent_textless_backgrounds: false  # 로컬 도형 배경 사용 금지
 
 retention:
   hook_duration_seconds: 5

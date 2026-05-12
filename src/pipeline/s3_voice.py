@@ -41,14 +41,32 @@ class S3Voice(BaseStage):
         self.stage_dir.mkdir(parents=True, exist_ok=True)
         audio_path = self.stage_dir / "narration.mp3"
         srt_path = self.stage_dir / "narration.srt"
+        tts_provider_name = self.channel.providers.tts
+        channel_voice_id = _resolve_channel_voice_id(self.channel.providers.voice_id)
 
         if self.dry_run:
             return self._mock_result(script, audio_path, srt_path)
 
+        cached_segments = self._load_srt_segments(srt_path) if audio_path.exists() and srt_path.exists() else []
+        if cached_segments:
+            total_duration = cached_segments[-1].end
+            section_timings = self._compute_section_timings(script, cached_segments, total_duration)
+            logger.info(
+                f"Existing voice artifacts reused: {audio_path.name}, "
+                f"{srt_path.name} ({len(cached_segments)} segments)"
+            )
+            return VoiceResult(
+                audio_path=str(audio_path),
+                srt_path=str(srt_path),
+                total_duration_seconds=total_duration,
+                segments=cached_segments,
+                section_timings=section_timings,
+                tts_provider=tts_provider_name,
+                voice_id=channel_voice_id,
+            )
+
         # 채널 설정 기반 TTS 선택 (기본: elevenlabs)
         from ..providers.factory import create_tts
-        tts_provider_name = self.channel.providers.tts
-        channel_voice_id = _resolve_channel_voice_id(self.channel.providers.voice_id)
         tts = create_tts(tts_provider_name, fallback="elevenlabs")
 
         logger.info(
@@ -109,6 +127,39 @@ class S3Voice(BaseStage):
             tts_provider=tts_provider_name,
             voice_id=channel_voice_id or tts.default_voice_id,
         )
+
+    @staticmethod
+    def _load_srt_segments(srt_path: Path) -> list[TimedSegment]:
+        """이미 생성된 SRT를 TimedSegment 목록으로 복구한다."""
+        if not srt_path.exists():
+            return []
+
+        def parse_timecode(value: str) -> float:
+            h, m, rest = value.replace(",", ".").split(":")
+            return int(h) * 3600 + int(m) * 60 + float(rest)
+
+        content = srt_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return []
+
+        segments: list[TimedSegment] = []
+        for block in re.split(r"\n\s*\n", content):
+            lines = [line.strip() for line in block.splitlines() if line.strip()]
+            if len(lines) < 3 or "-->" not in lines[1]:
+                continue
+            try:
+                start_raw, end_raw = [part.strip() for part in lines[1].split("-->", maxsplit=1)]
+                segments.append(TimedSegment(
+                    text=" ".join(lines[2:]).strip(),
+                    start=parse_timecode(start_raw),
+                    end=parse_timecode(end_raw),
+                    confidence=0.0,
+                ))
+            except (ValueError, IndexError) as e:
+                logger.warning(f"SRT segment parse skipped: {e}")
+                continue
+
+        return segments
 
     def _compute_section_timings(
         self,

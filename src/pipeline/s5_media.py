@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from ..core.models import (
     Stage, StoryboardResult, Scene, MediaResult, MediaAsset, MediaType,
@@ -81,32 +81,13 @@ class S5Media(BaseStage):
                         f"last_error={record.error_message[:200]}"
                     )
 
-                    # 최종 폴백: Pillow 기반 스타일 이미지 생성
-                    try:
-                        out_path = (
-                            self.stage_dir
-                            / f"scene_{scene.scene_number:03d}_fallback.png"
-                        )
-                        self._generate_fallback_image(scene, out_path)
-                        record.fallback_used = True
-                        record.fallback_path = str(out_path)
-                        record.final_provider = "fallback_pillow"
-                        record.failure_stage = "fallback"
-                        logger.info(
-                            f"Scene {scene.scene_number}: 최종 Pillow 폴백 완료 → {out_path}"
-                        )
-                        return MediaAsset(
-                            scene_number=scene.scene_number,
-                            media_type=MediaType.AI_IMAGE,
-                            file_path=str(out_path),
-                            original_resolution=[1920, 1080],
-                            provider="fallback_pillow",
-                        )
-                    except Exception as fallback_err:
-                        logger.error(
-                            f"Scene {scene.scene_number} Pillow 폴백도 실패: {fallback_err}"
-                        )
-                        return None
+                    record.fallback_used = False
+                    record.final_provider = ""
+                    logger.error(
+                        f"Scene {scene.scene_number}: Pillow 폴백 비활성화됨. "
+                        "저품질 도형 이미지 대신 실패로 기록합니다."
+                    )
+                    return None
 
         # 병렬 생성
         tasks = [generate_scene(s) for s in storyboard.scenes]
@@ -207,46 +188,8 @@ class S5Media(BaseStage):
         )
         logger.info(f"실패 리포트 저장: {report_path}")
 
-    # 로컬 Pillow 렌더 대상 intent (API 호출 없이 빠르게 생성)
-    _LOCAL_RENDER_INTENTS = {
-        VisualIntent.CHART,
-        VisualIntent.CHECKLIST,
-        VisualIntent.COMPARISON_CARD,
-        VisualIntent.EMPHASIS_CAPTION,
-        VisualIntent.INFOGRAPHIC,
-        VisualIntent.CLOSING_CTA,
-    }
-
     async def _generate_single(self, scene: Scene) -> MediaAsset:
         """단일 씬 미디어 생성."""
-        settings = load_settings()
-        prefer_local = settings.media_generation.prefer_local_render
-
-        # 로컬 Pillow 렌더 우선: chart/card/checklist 등은 API 호출 없이 빠르게 생성
-        if (prefer_local
-            and scene.media_type == MediaType.AI_IMAGE
-            and scene.visual_intent in self._LOCAL_RENDER_INTENTS
-            and not self.dry_run):
-            try:
-                out_path = self.stage_dir / f"scene_{scene.scene_number:03d}.png"
-                self._generate_fallback_image(scene, out_path)
-                logger.info(
-                    f"Scene {scene.scene_number}: local Pillow render "
-                    f"(intent={scene.visual_intent.value})"
-                )
-                return MediaAsset(
-                    scene_number=scene.scene_number,
-                    media_type=MediaType.AI_IMAGE,
-                    file_path=str(out_path),
-                    original_resolution=[1920, 1080],
-                    provider="local_pillow",
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Scene {scene.scene_number}: local render failed ({e}), "
-                    "falling back to AI"
-                )
-
         if scene.media_type == MediaType.AI_IMAGE:
             return await self._generate_image(scene)
         elif scene.media_type == MediaType.AI_VIDEO:
@@ -264,16 +207,37 @@ class S5Media(BaseStage):
 
         채널 설정의 image_gen provider를 1순위로 사용.
         기본 순서: GPT Image → GPT Image 간소화 → Flux 보조 → 예외(외부 fallback)
+
+        쇼츠 모드: AI 이미지 생성을 완전히 스킵하고 Pillow 카드 템플릿(9:16)을 렌더.
         """
+        is_shorts = getattr(self.channel.content, "is_shorts", False) if hasattr(self.channel, "content") else False
+
         out_path = self.stage_dir / f"scene_{scene.scene_number:03d}.png"
         sn = scene.scene_number
 
         if self.dry_run:
+            if is_shorts:
+                self._render_shorts_card(out_path, scene)
+                return MediaAsset(
+                    scene_number=sn, media_type=MediaType.AI_IMAGE,
+                    file_path=str(out_path), original_resolution=[1080, 1920],
+                    provider="shorts_card",
+                )
             self._create_placeholder_image(out_path, scene)
             return MediaAsset(
                 scene_number=sn, media_type=MediaType.AI_IMAGE,
                 file_path=str(out_path), original_resolution=[1920, 1080],
                 provider="mock",
+            )
+
+        # ═══ 쇼츠 모드: AI 이미지 생성 비활성 — Pillow 카드 렌더 ═══
+        if is_shorts:
+            logger.info(f"Scene {sn}: shorts mode → Pillow 9:16 카드 렌더")
+            self._render_shorts_card(out_path, scene)
+            return MediaAsset(
+                scene_number=sn, media_type=MediaType.AI_IMAGE,
+                file_path=str(out_path), original_resolution=[1080, 1920],
+                provider="shorts_card",
             )
 
         # GPT Image 최적화 프롬프트 생성
@@ -284,7 +248,9 @@ class S5Media(BaseStage):
 
         # ═══ 프롬프트 캐시 확인 ═══
         import hashlib
-        prompt_hash = hashlib.md5(gpt_prompt[:200].encode()).hexdigest()[:12]
+        prompt_hash = hashlib.md5(
+            f"{sn}:{gpt_prompt}".encode("utf-8")
+        ).hexdigest()[:12]
         cached_path = self._prompt_cache.get(prompt_hash)
         if cached_path and cached_path.exists():
             import shutil
@@ -312,7 +278,7 @@ class S5Media(BaseStage):
         if result:
             return result
 
-        # ═══ 모든 시도 실패 → 예외로 외부 Pillow fallback 트리거 ═══
+        # ═══ 모든 시도 실패 → 저품질 도형 폴백 없이 실패로 기록 ═══
         last_label, last_err = errors[-1] if errors else ("unknown", RuntimeError("No providers"))
         last_err._failover_attempts = attempts  # type: ignore[attr-defined]
         last_err._failover_errors = errors  # type: ignore[attr-defined]
@@ -384,6 +350,8 @@ class S5Media(BaseStage):
         narration = getattr(scene, "narration_text", "") or ""
         intent = getattr(scene, "visual_intent", VisualIntent.REAL_BROLL)
         keywords = getattr(scene, "visual_keywords", [])
+        visual_cue = getattr(scene, "visual_cue", "") or ""
+        render_text = load_settings().media_generation.render_text_in_background
 
         niche = self.channel.niche
         niche_palette = {
@@ -397,29 +365,27 @@ class S5Media(BaseStage):
         # visual_intent별 구도/레이아웃 지시
         intent_instructions: dict[str, str] = {
             VisualIntent.CHART: (
-                "Create a clean, professional chart or graph visualization. "
-                "Include a bar chart or line graph with labeled axes. "
-                "Data should look realistic. Modern dashboard aesthetic."
+                "Create a premium photorealistic finance workspace scene with a laptop "
+                "or tablet showing an unlabeled analytical dashboard. Avoid flat vector "
+                "illustration and generic geometric clip-art."
             ),
             VisualIntent.INFOGRAPHIC: (
-                "Create a modern infographic layout with icons and structured data. "
-                "Use clean sections, arrows, and visual hierarchy. "
-                "Flat design style, easy to read at a glance."
+                "Create a premium editorial finance image using realistic objects: bank "
+                "cards, envelopes, phone banking screens, notebooks, and documents. "
+                "Avoid flat vector illustration and generic geometric clip-art."
             ),
             VisualIntent.CHECKLIST: (
-                "Create a clean checklist card with 3-5 checkbox items. "
-                "Some items checked, some unchecked. "
-                "Card-style layout, organized and clear."
+                "Create a photorealistic planning desk scene with a notebook, pen, "
+                "calendar, and finance app screen, all without readable writing."
             ),
             VisualIntent.COMPARISON_CARD: (
-                "Create a side-by-side comparison card layout. "
-                "Two columns with clear labels, split down the middle. "
-                "Use contrasting colors for each side."
+                "Create a cinematic side-by-side real-world comparison scene using "
+                "two realistic desk setups or lifestyle vignettes. No labels or UI text."
             ),
             VisualIntent.EMPHASIS_CAPTION: (
-                "Create a bold, dramatic visual with large impactful text or numbers. "
-                "Cinematic background with spotlight effect. "
-                "The focal point should be a big, attention-grabbing element."
+                "Create a cinematic symbolic photograph with dramatic lighting and "
+                "a real object focal point such as a wallet, bank card, phone, or notebook. "
+                "Avoid flat vector illustration and generic geometric clip-art."
             ),
             VisualIntent.REAL_BROLL: (
                 "Create a photorealistic lifestyle or cityscape photograph. "
@@ -434,24 +400,37 @@ class S5Media(BaseStage):
                 "Clean studio background, professional lighting, confident posture."
             ),
             VisualIntent.CLOSING_CTA: (
-                "Create a YouTube channel subscribe CTA card. "
-                "Subscribe button, notification bell, 'Like & Subscribe' layout. "
-                "Professional ending card design."
+                "Create a polished creator desk closing shot with camera gear, a laptop, "
+                "and soft studio lighting. Do not include subscribe words or readable UI text."
             ),
         }
 
         base_instruction = intent_instructions.get(intent, intent_instructions[VisualIntent.REAL_BROLL])
+        cue_instruction = self._cue_image_instruction(visual_cue)
+        if cue_instruction:
+            base_instruction = f"{cue_instruction} {base_instruction}"
+
+        context = desc[:200]
+        if not render_text:
+            context = self._sanitize_textless_image_context(scene, niche)
 
         # 키워드를 시각 요소로 변환
         keyword_hint = ""
-        if keywords:
+        if keywords and render_text:
             keyword_hint = f"Feature these key elements: {', '.join(keywords[:3])}."
+
+        no_text_instruction = (
+            "Do not render readable text, Korean characters, Latin letters, numerals, "
+            "percent signs, captions, labels, watermarks, UI words, or subtitles inside the image. "
+            "Any spoken content will be added later as a subtitle layer."
+        )
 
         parts = [
             base_instruction,
-            f"Context: {desc[:200]}." if desc else "",
+            f"Context: {context}." if context else "",
             keyword_hint,
             f"Color palette: {niche_palette}.",
+            no_text_instruction if not render_text else "",
             "Aspect ratio: 16:9 landscape. No watermarks.",
             "High resolution, professional quality.",
         ]
@@ -460,16 +439,120 @@ class S5Media(BaseStage):
         return prompt[:2000]
 
     @staticmethod
+    def _cue_image_instruction(visual_cue: str) -> str:
+        """visual_cue를 이미지 모델용 텍스트 없는 구도 지시로 변환."""
+        return {
+            "money_decrease": (
+                "Depict money decreasing with realistic objects: a wallet, cash laid out "
+                "on a desk, receipts, and a visibly smaller remaining stack. "
+                "Avoid flat vector illustration and generic geometric clip-art."
+            ),
+            "remaining_balance": (
+                "Depict a remaining balance with a small cash stack beside a phone banking "
+                "screen and a tidy finance desk, without readable text."
+            ),
+            "money_income": (
+                "Depict salary income with realistic cash, bank card, and phone banking "
+                "objects arranged as money arriving into an account."
+            ),
+            "money_saving": (
+                "Depict saving money with realistic cash stacks, coins, envelopes, and a "
+                "planning notebook. Avoid coin-bank animal motifs and flat icon imagery."
+            ),
+            "debt_pressure": (
+                "Depict debt pressure with realistic bills, loan papers, a calculator, "
+                "and tense desk lighting, without readable text."
+            ),
+            "expense_breakdown": (
+                "Depict a budget breakdown with realistic receipts, envelopes, a calculator, "
+                "and a phone banking screen arranged into spending categories, without labels."
+            ),
+            "account_split": (
+                "Depict account separation with several real envelopes, bank cards, and cash "
+                "stacks on a desk, arranged as separate accounts without labels."
+            ),
+            "risk_warning": (
+                "Depict financial risk with a realistic stressed desk scene: unpaid bills, "
+                "calculator, empty wallet, and moody lighting, without readable text."
+            ),
+            "target_goal": (
+                "Depict a financial goal with a realistic planning notebook, calendar, "
+                "cash envelope, and phone banking screen, without readable text."
+            ),
+            "step_sequence": (
+                "Depict a step-by-step process with realistic objects laid out left to right: "
+                "phone, bank card, envelopes, and notebook, without readable text."
+            ),
+            "case_story": (
+                "Depict a real-life example visually: a natural lifestyle planning scene with "
+                "a person at a desk, phone, and documents without readable text."
+            ),
+            "timeline": (
+                "Depict a timeline through realistic calendar pages, a notebook, and savings "
+                "envelopes on a desk, without readable dates or labels."
+            ),
+            "growth_trend": (
+                "Depict improvement with realistic savings objects, a tidy desk, phone banking "
+                "screen, and optimistic lighting, without readable text."
+            ),
+            "decline_trend": (
+                "Depict decline with a realistic shrinking cash stack, receipts, empty wallet, "
+                "and cautionary lighting, without readable text."
+            ),
+            "rate_chart": (
+                "Depict interest-rate analysis with a realistic laptop or tablet showing an "
+                "unlabeled financial dashboard, without readable text."
+            ),
+        }.get(visual_cue, "")
+
+    @staticmethod
+    def _sanitize_textless_image_context(scene: Scene, niche: str) -> str:
+        """이미지 모델이 글자/숫자를 그리지 않도록 컨텍스트를 시각어 중심으로 정리."""
+        import re
+
+        source = (
+            getattr(scene, "stock_search_query", "")
+            or getattr(scene, "image_prompt", "")
+            or getattr(scene, "visual_description", "")
+            or ""
+        )
+        source = re.sub(r'\d+[\d,.\s]*[%A-Za-z가-힣]*', ' ', source)
+        source = re.sub(r'[가-힣]+', ' ', source)
+        source = re.sub(r'\bpiggy\s*bank\b|\bpiggy\b', ' ', source, flags=re.IGNORECASE)
+        source = re.sub(r'\b(text|caption|label|number|percent|headline|title|word|letter)s?\b',
+                        ' ', source, flags=re.IGNORECASE)
+        source = re.sub(r'\s+', ' ', source).strip(" ,.-")
+
+        cue_context = S5Media._cue_image_instruction(getattr(scene, "visual_cue", "") or "")
+        if cue_context:
+            if len(source) >= 8:
+                return f"{cue_context} Scene-specific context: {source}."
+            return cue_context
+
+        niche_fallback = {
+            "real_estate": "apartment building lifestyle, city street, real estate planning",
+            "finance": "banking desk, savings account, phone banking, realistic finance objects",
+            "health": "clean wellness scene, realistic medical and lifestyle objects",
+            "ai": "realistic technology workspace, laptop, subtle neural network light patterns",
+            "business": "office planning scene, realistic business documents and laptop",
+        }
+        return source if len(source) >= 8 else niche_fallback.get(niche, "professional cinematic visual background")
+
+    @staticmethod
     def _simplify_prompt(scene: Scene) -> str:
         """실패한 프롬프트를 간소화 — 영문 키워드 + 스타일 지시어 중심."""
-        desc = getattr(scene, "visual_description", "") or ""
         import re
+        cue_desc = S5Media._cue_image_instruction(getattr(scene, "visual_cue", "") or "")
+        desc = cue_desc or getattr(scene, "stock_search_query", "") or getattr(scene, "visual_description", "") or ""
         english_parts = re.findall(r'[A-Za-z0-9][A-Za-z0-9\s,.-]+', desc)
-        keywords = ", ".join(english_parts).strip() if english_parts else "professional infographic"
+        keywords = ", ".join(english_parts).strip() if english_parts else "professional editorial photograph"
+        keywords = re.sub(r'\d+[\d,.\s]*[%A-Za-z]*', ' ', keywords)
+        keywords = re.sub(r'\s+', ' ', keywords).strip(" ,.-") or "professional editorial photograph"
 
         style_suffix = (
             "cinematic lighting, high quality, 4K resolution, "
-            "professional photography, clean composition"
+            "professional photography, clean composition, no readable text, "
+            "no letters, no numerals, no captions, no labels"
         )
         simplified = f"{keywords}, {style_suffix}"
         return simplified[:500]
@@ -508,14 +591,21 @@ class S5Media(BaseStage):
         if self.dry_run:
             # mock: 이미지 placeholder
             img_path = self.stage_dir / f"scene_{scene.scene_number:03d}_stock.png"
-            self._create_placeholder_image(img_path, scene, label="STOCK")
+            is_shorts = getattr(self.channel.content, "is_shorts", False) if hasattr(self.channel, "content") else False
+            if is_shorts:
+                self._render_shorts_card(img_path, scene)
+            else:
+                self._create_placeholder_image(img_path, scene, label="STOCK")
             return MediaAsset(
                 scene_number=scene.scene_number, media_type=MediaType.STOCK_VIDEO,
                 file_path=str(img_path), provider="mock_pexels",
             )
 
-        from ..providers.stock_media import PexelsStockMedia
-        stock = PexelsStockMedia()
+        # PexelsStockMedia는 production 전체에서 1개 인스턴스 공유 (중복 방지)
+        if not hasattr(self, "_stock_media"):
+            from ..providers.stock_media import PexelsStockMedia
+            self._stock_media = PexelsStockMedia()
+        stock = self._stock_media
         query = scene.stock_search_query or scene.visual_description[:30]
         results = await stock.search_videos(query)
         self.record_cost("pexels", "search", units=1, unit_cost=0.0)
@@ -608,7 +698,7 @@ class S5Media(BaseStage):
         return record
 
     # ------------------------------------------------------------------
-    # 폴백 이미지 생성 (AI 실패 시)
+    # 색상 유틸
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -622,93 +712,6 @@ class S5Media(BaseStage):
             int(hex_color[2:4], 16),
             int(hex_color[4:6], 16),
         )
-
-    def _generate_fallback_image(self, scene: Scene, out_path: Path) -> None:
-        """visual_intent 기반 고품질 Pillow 이미지 생성.
-
-        visual_templates 모듈의 고도화된 템플릿을 사용.
-        chart는 narration 성격에 따라 3종 변형 자동 선택.
-        """
-        from ..core import visual_templates as vt
-
-        intent = getattr(scene, "visual_intent", VisualIntent.REAL_BROLL)
-        W, H = 1920, 1080
-        img = Image.new("RGB", (W, H))
-        draw = ImageDraw.Draw(img)
-
-        primary = self._hex_to_rgb(getattr(self.channel.visual, 'primary_color', '#1a2840'))
-        secondary = self._hex_to_rgb(getattr(self.channel.visual, 'secondary_color', '#2d4a6f'))
-        accent = self._hex_to_rgb(getattr(self.channel.visual, 'accent_color', '#EF233C'))
-
-        # 공통: 부드러운 gradient background (numpy 방식 — 밴딩 방지)
-        import numpy as np
-        arr = np.zeros((H, W, 3), dtype=np.uint8)
-        for c in range(3):
-            col = np.linspace(primary[c], secondary[c], H, dtype=np.float32)
-            arr[:, :, c] = col.reshape(-1, 1)
-        # 밴딩 방지 미세 노이즈
-        noise = np.random.randint(-2, 3, (H, W, 3), dtype=np.int16)
-        arr = np.clip(arr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr, "RGB")
-        draw = ImageDraw.Draw(img)
-
-        narration = getattr(scene, "narration_text", "") or ""
-        keywords = getattr(scene, "visual_keywords", []) or []
-        vis_desc = getattr(scene, "visual_description", "") or ""
-
-        # ═══ intent별 레이아웃 분기 (visual_templates 모듈 사용) ═══
-        if intent == VisualIntent.CHART:
-            # 숫자가 없으면 chart를 쓰지 않고 fallback (반복 방지를 위해 분산)
-            has_data = vt.can_draw_chart(narration)
-            if not has_data:
-                scene_num = getattr(scene, 'scene_number', 0)
-                fallback_type = scene_num % 3  # 0=checklist, 1=emphasis, 2=infographic
-                if fallback_type == 0:
-                    fb_name = "checklist"
-                    vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
-                elif fallback_type == 1:
-                    fb_name = "emphasis"
-                    vt.draw_emphasis_card(draw, narration, keywords, accent, vis_desc)
-                else:
-                    fb_name = "infographic"
-                    vt.draw_infographic_card(draw, narration, keywords, accent, primary, vis_desc)
-                logger.info(
-                    f"Scene {scene_num}: no numeric data for chart → {fb_name} fallback"
-                )
-            else:
-                variant = vt._select_chart_variant(narration)
-                if variant == "gauge":
-                    vt.draw_chart_gauge(draw, narration, keywords, accent, primary, vis_desc)
-                elif variant == "line":
-                    vt.draw_chart_line(draw, narration, keywords, accent, primary, vis_desc)
-                elif variant == "kpi_only":
-                    vt.draw_chart_kpi_only(draw, narration, keywords, accent, primary, vis_desc)
-                else:
-                    vt.draw_chart_kpi_bar(draw, narration, keywords, accent, primary, vis_desc)
-        elif intent == VisualIntent.CHECKLIST:
-            vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
-        elif intent == VisualIntent.COMPARISON_CARD:
-            ok = vt.draw_comparison_card(draw, narration, keywords, accent, primary, secondary, vis_desc)
-            if not ok:
-                vt.draw_checklist_card(draw, narration, keywords, accent, primary, vis_desc)
-        elif intent == VisualIntent.EMPHASIS_CAPTION:
-            vt.draw_emphasis_card(draw, narration, keywords, accent, vis_desc)
-        elif intent == VisualIntent.INFOGRAPHIC:
-            vt.draw_infographic_card(draw, narration, keywords, accent, primary, vis_desc)
-        elif intent == VisualIntent.CLOSING_CTA:
-            channel_name = getattr(self.channel, 'name', '')
-            vt.draw_cta_card(draw, accent, primary, channel_name)
-        else:
-            scene_num = getattr(scene, 'scene_number', 0)
-            vt.draw_default_card(draw, narration, vis_desc, accent, primary, scene_num)
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(str(out_path), "PNG")
-
-        # Visual QA: 기본 품질 검증
-        self._validate_generated_image(img, out_path, scene)
-
-    # ── 기존 _draw_* 메서드는 src/core/visual_templates.py로 이전됨 ──
 
     @staticmethod
     def _validate_generated_image(img: Image.Image, path: Path, scene: Any) -> None:
@@ -811,6 +814,266 @@ class S5Media(BaseStage):
         except Exception:
             pass
         img.save(str(path))
+
+    # ═══════════════════════════════════════════════════
+    # 쇼츠 9:16 Pillow 카드 렌더링
+    # ═══════════════════════════════════════════════════
+
+    # 쇼츠 캔버스 상수
+    _SHORTS_W = 1080
+    _SHORTS_H = 1920
+    _SHORTS_SUBTITLE_MARGIN = 280  # 하단 자막 안전영역
+
+    def _render_shorts_card(self, path: Path, scene: Scene) -> None:
+        """쇼츠용 9:16 카드 이미지 렌더링 (visual_intent별 디자인).
+
+        모든 AI_IMAGE 씬은 이 함수로 생성된다. API 호출 없음, 로컬 Pillow만 사용.
+        """
+        from ..core.text_render import draw_text_box
+        from ..core.fonts import get_korean_font
+        from ..core.visual_templates import derive_scene_title
+
+        W, H = self._SHORTS_W, self._SHORTS_H
+        niche = getattr(self.channel, "niche", "finance")
+
+        # 채널 색상 팔레트
+        primary = self._hex_to_rgb(
+            getattr(self.channel.visual, "primary_color", "#0F172A")
+        )
+        secondary = self._hex_to_rgb(
+            getattr(self.channel.visual, "secondary_color", "#1E293B")
+        )
+        accent = self._hex_to_rgb(
+            getattr(self.channel.visual, "accent_color", "#3B82F6")
+        )
+
+        # 세로 그라데이션 배경 (primary → secondary)
+        img = Image.new("RGB", (W, H), color=primary)
+        draw = ImageDraw.Draw(img)
+        for y in range(H):
+            ratio = y / H
+            r = int(primary[0] + (secondary[0] - primary[0]) * ratio)
+            g = int(primary[1] + (secondary[1] - primary[1]) * ratio)
+            b = int(primary[2] + (secondary[2] - primary[2]) * ratio)
+            draw.line([(0, y), (W, y)], fill=(r, g, b))
+
+        # 상단 액센트 바 (좌측 세로)
+        draw.rectangle([0, 0, 14, H], fill=accent)
+        # 상단 가로 바
+        draw.rectangle([0, 0, W, 10], fill=accent)
+
+        # 헤더 — 카테고리 칩
+        intent = getattr(scene, "visual_intent", VisualIntent.REAL_BROLL)
+        chip_label = {
+            VisualIntent.CHART: "DATA",
+            VisualIntent.CHECKLIST: "CHECK",
+            VisualIntent.COMPARISON_CARD: "VS",
+            VisualIntent.EMPHASIS_CAPTION: "KEY",
+            VisualIntent.INFOGRAPHIC: "INFO",
+            VisualIntent.REAL_BROLL: "LIFE",
+            VisualIntent.MAP: "MAP",
+            VisualIntent.TALKING_HEAD_STYLE: "TALK",
+            VisualIntent.CLOSING_CTA: "CTA",
+        }.get(intent, "SCENE")
+
+        chip_font = get_korean_font(size=36, bold=True)
+        chip_x, chip_y = 60, 90
+        chip_bbox = draw.textbbox((0, 0), chip_label, font=chip_font)
+        chip_w = (chip_bbox[2] - chip_bbox[0]) + 40
+        chip_h = (chip_bbox[3] - chip_bbox[1]) + 24
+        draw.rounded_rectangle(
+            [chip_x, chip_y, chip_x + chip_w, chip_y + chip_h],
+            radius=18,
+            fill=accent,
+        )
+        draw.text(
+            (chip_x + 20, chip_y + 8),
+            chip_label,
+            fill="white",
+            font=chip_font,
+        )
+
+        # 타이틀 (씬 narration에서 추출)
+        title = derive_scene_title(
+            narration=getattr(scene, "narration_text", ""),
+            vis_desc=getattr(scene, "visual_description", ""),
+            intent=intent.value if hasattr(intent, "value") else str(intent),
+            max_len=18,
+        )
+
+        title_box = (60, chip_y + chip_h + 60, W - 60, chip_y + chip_h + 260)
+        draw_text_box(
+            draw,
+            title,
+            title_box,
+            fill="white",
+            max_lines=2,
+            min_font_size=48,
+            max_font_size=96,
+            align="left",
+        )
+
+        # 본문 — narration 전체 (자막은 별도 번인이므로 여기 텍스트는 보조)
+        narration = getattr(scene, "narration_text", "") or ""
+        body_box = (
+            60,
+            title_box[3] + 40,
+            W - 60,
+            H - self._SHORTS_SUBTITLE_MARGIN - 80,
+        )
+
+        # 인텐트별 장식 블록
+        if intent == VisualIntent.CHECKLIST:
+            # 체크리스트 박스
+            items = self._extract_short_items(narration, max_items=3)
+            y_start = body_box[1]
+            for i, item in enumerate(items):
+                box_top = y_start + i * 180
+                draw.rounded_rectangle(
+                    [body_box[0], box_top, body_box[2], box_top + 150],
+                    radius=18,
+                    fill=(255, 255, 255, 20),
+                    outline=accent,
+                    width=4,
+                )
+                # 체크 마크
+                mark_box = (
+                    body_box[0] + 30,
+                    box_top + 30,
+                    body_box[0] + 120,
+                    box_top + 120,
+                )
+                draw.rounded_rectangle(mark_box, radius=12, fill=accent)
+                check_font = get_korean_font(size=60, bold=True)
+                draw.text(
+                    (mark_box[0] + 20, mark_box[1] + 8),
+                    "✓",
+                    fill="white",
+                    font=check_font,
+                )
+                # 아이템 텍스트
+                draw_text_box(
+                    draw,
+                    item,
+                    (mark_box[2] + 30, box_top + 30, body_box[2] - 30, box_top + 130),
+                    fill="white",
+                    max_lines=2,
+                    min_font_size=32,
+                    max_font_size=44,
+                )
+        elif intent == VisualIntent.COMPARISON_CARD:
+            # A vs B 좌우 분할
+            mid_y = (body_box[1] + body_box[3]) // 2
+            top_box = (body_box[0], body_box[1], body_box[2], mid_y - 40)
+            bot_box = (body_box[0], mid_y + 40, body_box[2], body_box[3])
+            draw.rounded_rectangle(top_box, radius=24, outline=accent, width=5)
+            draw.rounded_rectangle(bot_box, radius=24, outline=(200, 200, 200), width=4)
+            # VS 배지
+            vs_font = get_korean_font(size=72, bold=True)
+            vs_bbox = draw.textbbox((0, 0), "VS", font=vs_font)
+            vs_w = vs_bbox[2] - vs_bbox[0]
+            draw.text(
+                ((W - vs_w) // 2, mid_y - 40),
+                "VS",
+                fill=accent,
+                font=vs_font,
+            )
+            # 상/하단 텍스트는 narration 전체 분배
+            half = len(narration) // 2 if narration else 0
+            draw_text_box(
+                draw,
+                narration[:half] or title,
+                (top_box[0] + 30, top_box[1] + 30, top_box[2] - 30, top_box[3] - 30),
+                fill="white",
+                max_lines=3,
+                min_font_size=30,
+                max_font_size=46,
+            )
+            draw_text_box(
+                draw,
+                narration[half:] or title,
+                (bot_box[0] + 30, bot_box[1] + 30, bot_box[2] - 30, bot_box[3] - 30),
+                fill="white",
+                max_lines=3,
+                min_font_size=30,
+                max_font_size=46,
+            )
+        elif intent == VisualIntent.CHART:
+            # 간단한 수평 막대 차트 시각화
+            bars = 3
+            bar_h = 90
+            gap = 60
+            start_y = body_box[1] + 60
+            widths = [0.95, 0.70, 0.45]
+            for i in range(bars):
+                y0 = start_y + i * (bar_h + gap)
+                full_w = body_box[2] - body_box[0] - 40
+                bar_w = int(full_w * widths[i])
+                # 배경 트랙
+                draw.rounded_rectangle(
+                    [body_box[0] + 20, y0, body_box[0] + 20 + full_w, y0 + bar_h],
+                    radius=bar_h // 2,
+                    fill=(255, 255, 255, 15),
+                    outline=(255, 255, 255),
+                    width=2,
+                )
+                # 액센트 바
+                draw.rounded_rectangle(
+                    [body_box[0] + 20, y0, body_box[0] + 20 + bar_w, y0 + bar_h],
+                    radius=bar_h // 2,
+                    fill=accent,
+                )
+        elif intent == VisualIntent.EMPHASIS_CAPTION:
+            # 대형 강조 카드 (반투명 블록 + 큰 타이틀만)
+            emp_box = (
+                body_box[0],
+                body_box[1] + 60,
+                body_box[2],
+                body_box[3] - 60,
+            )
+            draw.rounded_rectangle(emp_box, radius=32, outline=accent, width=6)
+            draw_text_box(
+                draw,
+                narration or title,
+                (emp_box[0] + 40, emp_box[1] + 40, emp_box[2] - 40, emp_box[3] - 40),
+                fill="white",
+                max_lines=5,
+                min_font_size=40,
+                max_font_size=72,
+                align="center",
+            )
+        else:
+            # 기본: 본문 텍스트 박스
+            draw_text_box(
+                draw,
+                narration or title,
+                body_box,
+                fill=(230, 230, 230),
+                max_lines=8,
+                min_font_size=32,
+                max_font_size=54,
+            )
+
+        # 하단 액센트 바
+        draw.rectangle([0, H - 10, W, H], fill=accent)
+
+        img.save(str(path), "PNG")
+        logger.info(
+            f"Scene {scene.scene_number}: shorts card rendered "
+            f"(intent={intent.value if hasattr(intent, 'value') else intent}, {W}x{H})"
+        )
+
+    @staticmethod
+    def _extract_short_items(text: str, max_items: int = 3) -> list[str]:
+        """narration에서 체크리스트용 짧은 항목 추출."""
+        import re
+        if not text:
+            return ["핵심 포인트 1", "핵심 포인트 2", "핵심 포인트 3"][:max_items]
+        parts = re.split(r'[.!?다요죠까니]\s*', text)
+        items = [p.strip() for p in parts if p.strip() and len(p.strip()) >= 4]
+        if len(items) < max_items:
+            items += ["핵심 포인트"] * (max_items - len(items))
+        return items[:max_items]
 
     def _create_placeholder_video(self, path: Path, scene: Scene) -> None:
         """테스트용 placeholder 비디오 (짧은 mp4)."""

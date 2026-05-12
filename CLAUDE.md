@@ -2,7 +2,9 @@
 
 ## 프로젝트 개요
 
-"영상 만들어줘" 한마디로 Claude Code가 여러 AI를 오케스트레이션하여 유튜브 롱폼 영상을 자동 생성하는 시스템.
+"영상 만들어줘" 한마디로 Claude Code가 여러 AI를 오케스트레이션하여 유튜브 영상(롱폼/쇼츠)을 자동 생성하는 시스템.
+
+**현재 운영 포맷**: 비용 이슈로 2026-04부터 5개 채널 전부 **YouTube Shorts 모드**로 전환 운영 중 (롱폼 코드는 보존, `content.format` 스위치로 분기). 롱폼 재활성화는 해당 채널 YAML에서 `format: longform`으로 변경.
 
 ## 기술 스택
 
@@ -26,7 +28,7 @@ src/
 │   ├── cost_tracker.py     # API 비용 추적
 │   ├── fonts.py            # 폰트 관리
 │   ├── korean_number.py    # 한국어 숫자+조수사 발음 교정
-│   ├── visual_templates.py # Pillow 기반 씬 이미지 카드 렌더링 (chart, checklist, comparison 등)
+│   ├── visual_templates.py # 씬 제목 유틸 (Pillow 도형 렌더 제거됨)
 │   └── text_render.py      # Pillow 텍스트 렌더링 유틸 (줄바꿈 + 자막 안전영역)
 ├── providers/      # AI 서비스 어댑터
 │   ├── base.py             # 추상 프로바이더 인터페이스
@@ -48,7 +50,7 @@ src/
 │   ├── s2_script.py        # 대본 생성
 │   ├── s3_voice.py         # 음성 합성 + 자막
 │   ├── s4_storyboard.py    # 스토리보드 (의미 단위 씬 분해 + VisualIntent)
-│   ├── s5_media.py         # 미디어 생성 (GPT Image + Pillow fallback)
+│   ├── s5_media.py         # 미디어 생성 (롱폼: GPT Image+Pexels / 쇼츠: Pillow 카드+Pexels)
 │   ├── s6_editing.py       # FFmpeg 편집 + 씬-나레이션 싱크 정렬 + blackdetect
 │   ├── s7_thumbnail.py     # 썸네일 생성
 │   ├── s8_export.py        # 최종 내보내기
@@ -131,6 +133,23 @@ S1 벤치마킹 → S2 대본 → S3 음성+자막 → S4 스토리보드 → S5
 
 각 스테이지 결과는 SQLite에 저장되며, 실패 시 해당 스테이지부터 재개(resume) 가능.
 
+### 포맷 스위치 (롱폼 vs 쇼츠)
+
+`ChannelContent.format` 필드 (`"longform"` | `"shorts"`)에 따라 각 스테이지가 분기 동작한다. 각 스테이지 내부에서 `self.channel.content.is_shorts` 체크.
+
+| 스테이지 | 롱폼 | 쇼츠 |
+|---|---|---|
+| S2 프롬프트 | `script_body.j2` | `script_shorts.j2` (170단어, 훅-본문-CTA) |
+| S4 씬 수 | 무제한 | `max_scenes`=12 cap + 씬당 3~8초 |
+| S4 visual_intent | 자유 | REAL_BROLL ≤ 3, 나머지는 카드 계열 |
+| S5 이미지 | GPT Image | Pillow 9:16 카드 (비용 0) |
+| S5 스톡 | Pexels | Pexels (중복 방지 ON) |
+| S6 해상도 | 1920×1080 | 1080×1920 |
+| S6 자막 | 기본 스타일 | FontSize=28, Bold, MarginV=180 |
+| S7 썸네일 | 1280×720 | 1080×1920 |
+
+쇼츠 모드에서 `_refine_visual_beats`는 스킵된다 (씬 수 폭발 방지). LLM이 3~8초 제약을 지키지 못하면 `_apply_shorts_constraints`가 인접 씬 병합으로만 복구.
+
 ### S4 스토리보드 — 의미 단위 씬 분해 + VisualIntent
 
 S4는 대본을 섹션 단위가 아닌 **의미 단위(문장/주장)** 로 씬을 분해한다.
@@ -157,9 +176,8 @@ class VisualIntent(str, Enum):
 ### S5 미디어 — visual_intent 기반 이미지 생성
 
 - `_build_gpt_image_prompt()`: intent별 구도/레이아웃 지시 (chart=차트, checklist=체크박스 등)
-- Failover: OpenAI GPT Image → 간소화 프롬프트 → Pillow fallback
-- Pillow fallback도 intent별 전용 디자인 (차트/체크리스트/비교카드/강조캡션 등)
-- **그라데이션 배경**: numpy 배열 + 미세 노이즈로 밴딩 없는 부드러운 배경 생성
+- Failover: OpenAI GPT Image → 간소화 프롬프트. 실패 시 저품질 도형 폴백을 만들지 않고 실패로 기록
+- S5 실영상 경로에서는 Pillow 기반 도형/카드 렌더를 사용하지 않음
 - `SceneFailureRecord`로 각 씬의 실패 원인을 구조화하여 기록 (provider, http_status, fallback 여부 등)
 
 ### S6 편집 — ffmpeg 네이티브 + 씬-나레이션 싱크 정렬 + 품질 게이트
@@ -177,30 +195,29 @@ class VisualIntent(str, Enum):
 
 ## 비주얼 템플릿 시스템 (`src/core/visual_templates.py`)
 
-Pillow 기반 다크 모던 스타일 씬 이미지 카드 렌더링. GPT Image 실패 시 fallback으로 사용.
+이 모듈은 `derive_scene_title()` 같은 제목 유틸과 캔버스 상수만 제공한다.
 
-- **표준 캔버스**: 1920x1080, 하단 180px 자막 안전영역 (`SUBTITLE_SAFE_MARGIN`)
-- **다크 블루 팔레트**: 채널별 primary/secondary/accent 3색 시스템 (finance: #0F172A/#1E293B/#3B82F6)
-- **텍스트 렌더링**: `src/core/text_render.py`의 `draw_text_box()` — 픽셀 기반 줄바꿈 + 박스 클리핑
-- **헤더 바**: 다크 배경 + 왼쪽 accent 세로바(5px) + pill shape 카테고리 칩
-- **intent별 전용 렌더 함수**:
-  - `draw_chart_kpi_bar()` — 풀와이드 막대 차트 (그림자 + 둥근 모서리)
-  - `draw_chart_kpi_only()` — KPI 카드 단독
-  - `draw_chart_line()` — 라인 차트
-  - `draw_chart_gauge()` — 게이지 차트
-  - `draw_comparison_card()` — A vs B 비교 카드
-  - `draw_checklist_card()` — 체크리스트 카드
-  - `draw_emphasis_card()` — 글래시 카드 + accent 숫자 (전체 오버레이 아님)
-  - `draw_infographic_card()` — 인포그래픽
-  - `draw_cta_card()` — 엔딩 CTA 카드
-- `derive_scene_title()`: 씬 나레이션에서 타이틀 + 카테고리 칩 자동 추출
+**상수:**
+- `STANDARD_WIDTH/HEIGHT = 1920/1080` — 롱폼 16:9
+- `SHORTS_WIDTH/HEIGHT = 1080/1920` — 쇼츠 9:16
+- `SHORTS_SUBTITLE_SAFE_MARGIN = 280` — 쇼츠 세로화면 하단 자막 영역
+
+**실제 카드 렌더링 위치:**
+- **롱폼**: Pillow 도형 폴백 없음. AI 이미지/스톡 실패 시 `SceneFailureRecord`로 기록하여 문제를 드러냄 (저품질 폴백 금지)
+- **쇼츠**: `src/pipeline/s5_media.py`의 private 메서드 `_render_shorts_card()`가 직접 1080×1920 Pillow 카드를 렌더. 채널 팔레트 그라데이션 + accent 바 + 카테고리 칩 + 타이틀 + visual_intent별 전용 블록(CHECKLIST/COMPARISON_CARD/CHART/EMPHASIS_CAPTION)
 
 ## 이미지 생성 프로바이더
 
+### 롱폼 경로
 - **1순위**: OpenAI GPT Image (`gpt-image-1`) — `src/providers/image_gen_openai.py`
 - **2순위**: 간소화 프롬프트로 재시도
-- **최종 폴백**: Pillow 기반 카드 이미지 (`src/core/visual_templates.py`, visual_intent별 디자인)
-- Flux는 코드에 존재하지만 현재 실행 경로에서 제외 (API 접속 불가)
+- **최종 폴백**: 없음. 저품질 Pillow 도형 이미지 대신 실패로 기록
+- Flux는 코드에 존재하지만 현재 실행 경로에서 제외
+
+### 쇼츠 경로 (2026-04~)
+- **AI 이미지 생성 완전 비활성** — `S5Media._generate_image()`가 `is_shorts` 감지 시 GPT Image 경로를 스킵하고 `_render_shorts_card()`로 직행
+- **Pexels 스톡 영상**: real_broll 등 일부 씬에서만 사용 (씬당 최대 3개), `PexelsStockMedia._used_video_ids`로 production 내 중복 방지
+- **1편당 이미지 API 비용: $0**
 
 ## STT (음성→텍스트)
 
@@ -220,6 +237,7 @@ Pillow 기반 다크 모던 스타일 씬 이미지 카드 렌더링. GPT Image 
 
 - **Stage**: BENCHMARK → SCRIPT → VOICE → STORYBOARD → MEDIA → EDITING → THUMBNAIL → EXPORT
 - **ProductionStatus**: PENDING, RUNNING, PAUSED, COMPLETED, FAILED
+- **ProductionFormat**: LONGFORM, SHORTS — 채널 config에서 지정, 각 스테이지 분기 스위치
 - **MediaType**: AI_IMAGE, AI_VIDEO, STOCK_VIDEO, STOCK_IMAGE
 - **TransitionType**: CUT, FADE, DISSOLVE, SLIDE, ZOOM
 - **VisualIntent**: 9종 — 씬의 시각 표현 방식 강제 지정
@@ -269,7 +287,8 @@ asyncio.run(test())
 - 건강 채널은 `safety_policy` 필수 (의료 면책 조항)
 - S4 스토리보드 수정 시 `VisualIntent` enum과 `NICHE_VISUAL_RULES` 동기화 필수
 - `scene_relevance_report.json`으로 영상 제작 후 장면 관련도 검수 가능
-- 비주얼 템플릿 수정 시 `SUBTITLE_SAFE_MARGIN`(180px) 하단 안전영역 준수 필수
-- `visual_templates.py`에서 narration 텍스트는 반드시 `draw_text_box()` 사용 (substring 금지)
+- 실영상 경로에 Pillow 도형/카드 렌더를 다시 추가하지 말 것
 - S6 alignment drift 목표: max_drift < 1.5s, matched rate > 90%
 - S6의 fuzzy match 임계값(0.25) 수정 시 매치율과 오탐 균형 고려 필요
+- 쇼츠 모드 수정 시 반드시 `is_shorts` 분기만 추가하고 롱폼 경로는 건드리지 말 것 (보존 원칙)
+- 쇼츠 씬 제약(`max_scenes=12`, 3~8초)은 `_apply_shorts_constraints`(S4)와 `_apply_timing`(S4)에서 강제됨

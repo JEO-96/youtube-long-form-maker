@@ -33,6 +33,8 @@ class S6Editing(BaseStage):
     MAX_SCENE_DURATION = 20.0       # 단일 씬 최대 20초
     MAX_CTA_DURATION = 12.0         # CTA/outro 씬 최대 12초
     SNAP_TO_SENTENCE_THRESHOLD = 0.8
+    MIN_ALIGNMENT_MATCH_RATE = 0.5
+    MAX_ACCEPTED_ALIGNMENT_DRIFT = 6.0
 
     async def run(self, **kwargs: Any) -> EditingResult:
         script_data = self.load_previous(Stage.SCRIPT)
@@ -137,10 +139,14 @@ class S6Editing(BaseStage):
                             f"Alignment match rate too low: {match_count}/{total_scenes} "
                             f"({match_rate:.0%} < 50%)"))
 
+        # 쇼츠 모드: 9:16 해상도 기록
+        is_shorts = getattr(self.channel.content, "is_shorts", False) if hasattr(self.channel, "content") else False
+        resolution = [1080, 1920] if is_shorts else [1920, 1080]
+
         return EditingResult(
             output_path=str(final_path),
             duration_seconds=duration,
-            resolution=[1920, 1080],
+            resolution=resolution,
             file_size_mb=round(file_size, 2),
             applied_effects=applied_effects,
             pattern_interrupts_count=self._last_pi_success_count,
@@ -177,7 +183,9 @@ class S6Editing(BaseStage):
         4. 오디오 mux
         5. SRT 자막 번인
         """
-        target_size = (1920, 1080)
+        # 쇼츠 모드: 9:16 세로 해상도
+        is_shorts = getattr(self.channel.content, "is_shorts", False) if hasattr(self.channel, "content") else False
+        target_size = (1080, 1920) if is_shorts else (1920, 1080)
         w, h = target_size
 
         # ═══ Step 1: 오디오 기반 target_duration 결정 ═══
@@ -284,11 +292,12 @@ class S6Editing(BaseStage):
 
             # 패턴 인터럽트 적용 (해당 씬에 이벤트가 있으면)
             pi_events = scene_pi_events.get(i, [])
+            applied_scene_pi_count = 0
             if pi_events and clip_path.exists():
                 enhanced_path = tmp_dir / f"clip_{i:03d}_pi.mp4"
                 try:
                     cumulative_start = sum(aligned_durations[:i])
-                    self._apply_pattern_interrupt(
+                    applied_pi_count = self._apply_pattern_interrupt(
                         clip_path, enhanced_path, pi_events,
                         scene_dur, w, h, cumulative_start,
                     )
@@ -303,7 +312,8 @@ class S6Editing(BaseStage):
                         else:
                             clip_path.unlink(missing_ok=True)
                             enhanced_path.rename(clip_path)
-                            self._last_pi_success_count += len(pi_events)
+                            self._last_pi_success_count += applied_pi_count
+                            applied_scene_pi_count = applied_pi_count
                     else:
                         logger.warning(f"PI effect produced empty output for scene {i+1}")
                 except Exception as e:
@@ -315,7 +325,7 @@ class S6Editing(BaseStage):
             logger.info(
                 f"Scene {scene.scene_number}: {scene_dur:.1f}s "
                 f"(aligned from {scene.duration:.1f}s, {scene.media_type.value})"
-                f"{f' +{len(pi_events)}PI' if pi_events else ''}"
+                f"{f' +{applied_scene_pi_count}PI' if applied_scene_pi_count else ''}"
             )
 
         if not clip_paths:
@@ -480,7 +490,7 @@ class S6Editing(BaseStage):
 
         - 이미지 → 지정 duration 영상
         - 비디오 → 리사이즈 + 트림 or 루프
-        - 에셋 없음 → placeholder 이미지 → 영상
+        - 에셋 없음 → dry-run에서만 placeholder 이미지 → 영상
         """
         w, h = target_size
 
@@ -496,7 +506,17 @@ class S6Editing(BaseStage):
                     self._image_to_clip(asset_path, out_path, duration, w, h)
                     return
 
-        # 에셋 없음 → placeholder 생성
+        if not self.dry_run:
+            raise StageError(
+                "editing",
+                self.production_id,
+                cause=ValueError(
+                    f"Scene {getattr(scene, 'scene_number', '?')}: media asset missing. "
+                    "저품질 placeholder/도형 배경을 넣지 않고 렌더를 중단합니다."
+                ),
+            )
+
+        # dry-run 에셋 없음 → placeholder 생성
         placeholder_path = out_path.with_suffix(".png")
         self._generate_placeholder(scene, placeholder_path, target_size)
         self._image_to_clip(placeholder_path, out_path, duration, w, h)
@@ -601,13 +621,23 @@ class S6Editing(BaseStage):
 
         srt_escaped = str(wrapped_srt_path).replace("\\", "/").replace(":", "\\:")
 
-        # 자막 스타일: 작은 폰트 + 하단 배치 + 얇은 테두리 (화면 가림 최소화)
-        style = (
-            "FontName=Malgun Gothic,FontSize=18,PrimaryColour=&H00FFFFFF,"
-            "OutlineColour=&H00000000,BackColour=&H60000000,"
-            "Outline=1,Shadow=1,MarginV=30,MarginL=80,MarginR=80,"
-            "Alignment=2,BorderStyle=3"
-        )
+        # 쇼츠 모드: 세로 화면은 자막 더 크게, 하단 마진 더 넉넉히
+        is_shorts = getattr(self.channel.content, "is_shorts", False) if hasattr(self.channel, "content") else False
+        if is_shorts:
+            style = (
+                "FontName=Malgun Gothic,FontSize=28,PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H00000000,BackColour=&HA0000000,"
+                "Outline=2,Shadow=1,MarginV=180,MarginL=60,MarginR=60,"
+                "Alignment=2,BorderStyle=3,Bold=1"
+            )
+        else:
+            # 자막 스타일: 작은 폰트 + 하단 배치 + 얇은 테두리 (화면 가림 최소화)
+            style = (
+                "FontName=Malgun Gothic,FontSize=18,PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H00000000,BackColour=&H60000000,"
+                "Outline=1,Shadow=1,MarginV=30,MarginL=80,MarginR=80,"
+                "Alignment=2,BorderStyle=3"
+            )
 
         # temp 파일에 먼저 쓰고, 검증 후 교체 (moov atom 보호)
         tmp_output = output_path.with_suffix(".tmp.mp4")
@@ -788,14 +818,28 @@ class S6Editing(BaseStage):
             durations, drift_info = self._align_scenes_to_voice(
                 scenes, voice, target_duration,
             )
-            self._last_alignment_info = drift_info
-            if durations:
+            match_count = sum(1 for d in drift_info if d.get('confidence', 0.0) >= 0.25)
+            match_rate = match_count / n_scenes if n_scenes else 0.0
+            max_drift = max((abs(d.get('drift', 0.0)) for d in drift_info), default=0.0)
+
+            if (
+                durations
+                and match_rate >= self.MIN_ALIGNMENT_MATCH_RATE
+                and max_drift <= self.MAX_ACCEPTED_ALIGNMENT_DRIFT
+            ):
+                self._last_alignment_info = drift_info
                 logger.info(
                     f"Voice-aligned: {len(durations)} scenes, "
                     f"total={sum(durations):.1f}s, target={target_duration:.1f}s"
                 )
                 durations = self._cap_scene_durations(durations, scenes, target_duration)
                 return durations
+            if durations:
+                logger.warning(
+                    f"Voice alignment rejected: match_rate={match_rate:.0%} "
+                    f"({match_count}/{n_scenes}), max_drift={max_drift:.1f}s. "
+                    "Falling back to storyboard timing."
+                )
 
         # 2순위: section_timings 매칭 (유지)
         self._last_alignment_info = []
@@ -823,10 +867,39 @@ class S6Editing(BaseStage):
     @staticmethod
     def _normalize_for_match(text: str) -> str:
         """텍스트 정규화 — 공백/구두점 통일."""
-        import re
-        text = re.sub(r'\s+', ' ', text.strip())
-        text = re.sub(r'[,.!?;:·…""\'\'\"\'()（）\[\]{}]', '', text)
-        return text.lower()
+        normalized, _ = S6Editing._normalize_with_map(text)
+        return normalized
+
+    @staticmethod
+    def _normalize_with_map(text: str) -> tuple[str, list[int]]:
+        """정규화된 문자열과 원문 char offset 매핑을 함께 만든다.
+
+        씬 매칭은 정규화 텍스트에서 수행하지만, 시간 변환은 원문 transcript
+        offset이 필요하다. 둘을 섞으면 장면 시작점이 밀리므로 매핑을 보존한다.
+        """
+        punct = set(',.!?;:·…"“”\'"()（）[]{}')
+        chars: list[str] = []
+        index_map: list[int] = []
+        last_was_space = True
+
+        for idx, ch in enumerate(text):
+            if ch.isspace():
+                if chars and not last_was_space:
+                    chars.append(" ")
+                    index_map.append(idx)
+                    last_was_space = True
+                continue
+            if ch in punct:
+                continue
+            chars.append(ch.lower())
+            index_map.append(idx)
+            last_was_space = False
+
+        while chars and chars[-1] == " ":
+            chars.pop()
+            index_map.pop()
+
+        return "".join(chars), index_map
 
     def _align_scenes_to_voice(
         self,
@@ -855,7 +928,7 @@ class S6Editing(BaseStage):
             transcript_parts.append(text)
             cursor += len(text) + 1  # +1 for space
         full_transcript = " ".join(transcript_parts)
-        norm_transcript = self._normalize_for_match(full_transcript)
+        norm_transcript, norm_to_orig = S6Editing._normalize_with_map(full_transcript)
 
         def _char_to_time(char_pos: int) -> float:
             """transcript char position → audio time (초)."""
@@ -871,13 +944,25 @@ class S6Editing(BaseStage):
                     return seg.start + ratio * (seg.end - seg.start)
             return 0.0
 
+        def _norm_char_to_time(norm_pos: int, *, is_end: bool = False) -> float:
+            """정규화 transcript 위치를 실제 transcript 시간으로 변환."""
+            if not norm_to_orig:
+                return 0.0
+            if is_end:
+                map_idx = min(max(norm_pos - 1, 0), len(norm_to_orig) - 1)
+                orig_pos = norm_to_orig[map_idx] + 1
+            else:
+                map_idx = min(max(norm_pos, 0), len(norm_to_orig) - 1)
+                orig_pos = norm_to_orig[map_idx]
+            return _char_to_time(orig_pos)
+
         # ── 각 scene을 순차 fuzzy match ──
         matched_spans: list[tuple[float, float, float]] = []  # (audio_start, audio_end, confidence)
         search_from = 0  # 순차 제약
 
         for scene in scenes:
             narr = getattr(scene, 'narration_text', '') or ''
-            norm_narr = self._normalize_for_match(narr)
+            norm_narr = S6Editing._normalize_for_match(narr)
 
             if len(norm_narr) < 5:
                 # 너무 짧은 텍스트 → 매치 불가
@@ -907,8 +992,8 @@ class S6Editing(BaseStage):
                         best_end = pos + win_size
 
             if best_ratio >= 0.25:
-                audio_start = _char_to_time(best_start)
-                audio_end = _char_to_time(best_end)
+                audio_start = _norm_char_to_time(best_start)
+                audio_end = _norm_char_to_time(best_end, is_end=True)
                 matched_spans.append((audio_start, audio_end, best_ratio))
                 search_from = best_end  # 순차 제약 유지
             else:
@@ -933,11 +1018,25 @@ class S6Editing(BaseStage):
             scene_num = getattr(scene, 'scene_number', i + 1)
 
             if audio_s >= 0 and audio_e > audio_s and conf >= 0.25:
-                dur = round(audio_e - audio_s, 2)
-                dur = max(self.MIN_SCENE_DURATION, dur)
                 drift = round(cursor_time - audio_s, 2)
-                # ★ cursor를 실제 음성 끝으로 스냅 → drift 누적 차단
-                cursor_time = audio_e
+
+                if audio_s > cursor_time + 0.05 and durations:
+                    # 현재 씬 앞에 남은 음성 구간은 이전 씬이 더 자연스럽게 담당한다.
+                    gap = round(audio_s - cursor_time, 2)
+                    durations[-1] = round(durations[-1] + gap, 2)
+                    prev = drift_info[-1]
+                    prev['duration'] = round(prev.get('duration', 0.0) + gap, 2)
+                    cursor_time = audio_s
+
+                scene_start = cursor_time if durations else min(cursor_time, audio_s)
+                if audio_s > scene_start + 0.05 and not durations:
+                    # 앞쪽 무음/호흡 구간은 첫 씬에 포함한다.
+                    scene_start = cursor_time
+
+                dur = round(audio_e - scene_start, 2)
+                dur = max(self.MIN_SCENE_DURATION, dur)
+                # cursor를 실제 음성 끝으로 스냅 → drift 누적 차단
+                cursor_time = round(scene_start + dur, 3)
                 last_matched_end = audio_e
             else:
                 # 매치 실패 → 인접 매치 기반 보간 시도
@@ -976,6 +1075,7 @@ class S6Editing(BaseStage):
                 'assigned_start': round(cursor_time - dur, 1),
                 'drift': drift,
                 'confidence': round(conf, 2),
+                'duration': round(dur, 2),
             })
 
         # ── 합계 보정 ──
@@ -1343,18 +1443,16 @@ class S6Editing(BaseStage):
         scene_dur: float,
         w: int, h: int,
         scene_start: float,
-    ) -> None:
+    ) -> int:
         """씬 클립에 패턴 인터럽트 효과 적용 (ffmpeg filter_complex).
 
-        MVP 구현:
-        - ZOOM: 1.0→1.15 줌인 후 복귀 (0.8초)
-        - SUBTITLE_EMPHASIS: 화면 하단에 강조 플래시 (0.5초 밝기 부스트)
-        - SCENE_CHANGE: 0.3초 밝기 펄스 (가벼운 전환 강조)
-        - SFX_HIT: 0.2초 밝기 펄스 (효과음은 별도 오디오 믹싱 필요)
+        화면 명암이 튀지 않도록 밝기 펄스 계열은 적용하지 않고,
+        필요한 경우에만 짧은 중앙 줌을 적용한다.
         """
         from ..retention.pattern_interrupt import InterruptType
 
         filters: list[str] = []
+        applied_count = 0
         for evt in events:
             local_t = evt.timestamp - scene_start
             if local_t < 0 or local_t >= scene_dur:
@@ -1374,31 +1472,12 @@ class S6Editing(BaseStage):
                     f":if(between(t\\,{t_s}\\,{t_e})\\,{cy}\\,0)"
                     f",scale={w}:{h}"
                 )
-
-            elif evt.interrupt_type == InterruptType.SCENE_CHANGE:
-                # fade=in은 0→st 구간을 black으로 만들므로 사용 금지.
-                # 대신 짧은 밝기 펄스로 전환 강조.
-                t_e = round(min(local_t + 0.3, scene_dur), 2)
-                filters.append(
-                    f"eq=brightness=0.04:enable='between(t,{t_s},{t_e})'"
-                )
-
-            elif evt.interrupt_type == InterruptType.SUBTITLE_EMPHASIS:
-                t_e = round(min(local_t + 0.5, scene_dur), 2)
-                filters.append(
-                    f"eq=brightness=0.08:enable='between(t,{t_s},{t_e})'"
-                )
-
-            elif evt.interrupt_type == InterruptType.SFX_HIT:
-                t_e = round(min(local_t + 0.2, scene_dur), 2)
-                filters.append(
-                    f"eq=brightness=0.12:enable='between(t,{t_s},{t_e})'"
-                )
+                applied_count += 1
 
         if not filters:
             import shutil
             shutil.copy2(str(clip_path), str(out_path))
-            return
+            return 0
 
         vf = ",".join(filters)
         self._run_ffmpeg([
@@ -1409,6 +1488,7 @@ class S6Editing(BaseStage):
             "-an",
             str(out_path),
         ], "pi_effect", timeout=60)
+        return applied_count
 
     # ═══════════════════════════════════════════════════
     # Optional Enhancers (기존 유지)

@@ -12,8 +12,10 @@ build/
 venv/
 
 # Data (productions are large)
-data/productions/
-data/db/
+data/
+*.mp4
+*.mp3
+*.wav
 
 # IDE
 .vscode/
@@ -27,3 +29,9 @@ Thumbs.db
 # Secrets
 *oauth*.json
 *credentials*.json
+
+# Claude Code 내부 디렉터리
+.claude/
+
+# 임시 파일
+finalTEMP_MPY_wvf_snd.mp4

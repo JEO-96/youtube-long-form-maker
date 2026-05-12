@@ -42,15 +42,24 @@ class S7Thumbnail(BaseStage):
         settings = load_settings()
         thumb_cfg = settings.thumbnail
 
+        # 쇼츠 모드: 9:16 썸네일 (1080x1920)
+        is_shorts = getattr(self.channel.content, "is_shorts", False) if hasattr(self.channel, "content") else False
+        if is_shorts:
+            thumb_w, thumb_h = 1080, 1920
+            thumb_bottom_margin = 200
+        else:
+            thumb_w, thumb_h = thumb_cfg.width, thumb_cfg.height
+            thumb_bottom_margin = thumb_cfg.safe_zone.bottom_margin
+
         # 썸네일 생성
         self._generate_thumbnail(
             thumb_path, script.title, script.hook,
-            thumb_cfg.width, thumb_cfg.height,
-            thumb_cfg.safe_zone.bottom_margin,
+            thumb_w, thumb_h,
+            thumb_bottom_margin,
         )
 
         # 썸네일 품질 검증
-        self._validate_thumbnail(thumb_path, thumb_cfg.width, thumb_cfg.height)
+        self._validate_thumbnail(thumb_path, thumb_w, thumb_h)
 
         # YouTube 메타데이터 생성
         title = script.title
